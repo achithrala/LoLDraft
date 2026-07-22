@@ -1,0 +1,21 @@
+champion_id,name,ddragon_id,tags,primary_role
+1,Aatrox,Aatrox,Fighter;Tank,top
+2,Darius,Darius,Fighter;Tank,top
+3,Malphite,Malphite,Tank;Fighter,top
+4,Jax,Jax,Fighter;Assassin,top
+5,Lee Sin,LeeSin,Fighter;Assassin,jungle
+6,Vi,Vi,Fighter;Assassin,jungle
+7,Sejuani,Sejuani,Tank;Fighter,jungle
+8,Kindred,Kindred,Marksman,jungle
+9,Ahri,Ahri,Mage;Assassin,mid
+10,Zed,Zed,Assassin,mid
+11,Orianna,Orianna,Mage;Support,mid
+12,Yasuo,Yasuo,Fighter;Assassin,mid
+13,Jinx,Jinx,Marksman,bottom
+14,Caitlyn,Caitlyn,Marksman,bottom
+15,Miss Fortune,MissFortune,Marksman;Mage,bottom
+16,Thresh,Thresh,Support;Fighter,support
+17,Lulu,Lulu,Support;Mage,support
+18,Nautilus,Nautilus,Tank;Support,support
+19,Renekton,Renekton,Fighter;Tank,top
+20,Xin Zhao,XinZhao,Fighter;Assassin,jungle

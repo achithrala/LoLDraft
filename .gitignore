@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Draft state persisted by the CLI -- local session data, not project source.
+.draftiq/
+
+# Machine-local Claude Code permissions, not shared project config.
+.claude/settings.local.json
