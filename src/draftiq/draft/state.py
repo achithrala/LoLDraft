@@ -10,7 +10,16 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from draftiq.draft.rules import order_for
-from draftiq.models import ActionType, DraftAction, DraftMode, DraftState, RankBracket, Role, Side
+from draftiq.models import (
+    ActionType,
+    DraftAction,
+    DraftMode,
+    DraftState,
+    ProviderName,
+    RankBracket,
+    Role,
+    Side,
+)
 
 
 class DraftError(Exception):
@@ -43,8 +52,13 @@ class DraftStateMachine:
         self._order = order_for(state.mode)
 
     @classmethod
-    def new(cls, mode: DraftMode, rank: RankBracket = RankBracket.ALL) -> DraftStateMachine:
-        return cls(DraftState(mode=mode, rank=rank))
+    def new(
+        cls,
+        mode: DraftMode,
+        rank: RankBracket = RankBracket.ALL,
+        provider: ProviderName = ProviderName.MANUAL,
+    ) -> DraftStateMachine:
+        return cls(DraftState(mode=mode, rank=rank, provider=provider))
 
     @property
     def step_index(self) -> int:

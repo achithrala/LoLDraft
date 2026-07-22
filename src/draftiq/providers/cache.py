@@ -5,6 +5,12 @@ requirement. Every provider method wrapped with `@cached` is looked up by a key 
 already includes the detected patch, so a patch bump is a natural cache miss rather
 than requiring an explicit invalidation pass -- `SQLiteCache.prune_stale_patch` exists
 purely for housekeeping (keeping the DB from growing unbounded across patches).
+
+Thread-safe: opened with `check_same_thread=False` and guarded by a lock, because
+`OpggProvider`'s prefetch path hits this from a thread pool (a cold `suggest()` call
+against a ~170-champion live roster is otherwise ~170 sequential HTTP round-trips --
+unacceptably slow for a live draft). SQLite's own file-level locking would otherwise
+also risk "database is locked" errors under concurrent writes from Python threads.
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ import hashlib
 import importlib
 import json
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -32,33 +39,36 @@ class SQLiteCache:
         self.db_path = Path(db_path)
         if str(self.db_path) != ":memory:":
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.db_path)
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS cache_entries (
-                cache_key TEXT PRIMARY KEY,
-                source TEXT NOT NULL,
-                method TEXT NOT NULL,
-                patch TEXT NOT NULL,
-                value TEXT NOT NULL,
-                expires_at REAL NOT NULL
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
+        with self._lock:
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cache_entries (
+                    cache_key TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    patch TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    expires_at REAL NOT NULL
+                )
+                """
             )
-            """
-        )
-        self._conn.commit()
+            self._conn.commit()
 
     def get(self, cache_key: str) -> str | None:
-        row = self._conn.execute(
-            "SELECT value, expires_at FROM cache_entries WHERE cache_key = ?", (cache_key,)
-        ).fetchone()
-        if row is None:
-            return None
-        value, expires_at = row
-        if expires_at < time.time():
-            self._conn.execute("DELETE FROM cache_entries WHERE cache_key = ?", (cache_key,))
-            self._conn.commit()
-            return None
-        return cast(str, value)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value, expires_at FROM cache_entries WHERE cache_key = ?", (cache_key,)
+            ).fetchone()
+            if row is None:
+                return None
+            value, expires_at = row
+            if expires_at < time.time():
+                self._conn.execute("DELETE FROM cache_entries WHERE cache_key = ?", (cache_key,))
+                self._conn.commit()
+                return None
+            return cast(str, value)
 
     def set(
         self,
@@ -69,26 +79,29 @@ class SQLiteCache:
         value: str,
         ttl_seconds: float,
     ) -> None:
-        self._conn.execute(
-            """
-            INSERT INTO cache_entries (cache_key, source, method, patch, value, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(cache_key) DO UPDATE SET
-                value = excluded.value, expires_at = excluded.expires_at
-            """,
-            (cache_key, source, method, patch, value, time.time() + ttl_seconds),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO cache_entries (cache_key, source, method, patch, value, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    value = excluded.value, expires_at = excluded.expires_at
+                """,
+                (cache_key, source, method, patch, value, time.time() + ttl_seconds),
+            )
+            self._conn.commit()
 
     def prune_stale_patch(self, source: str, current_patch: str) -> int:
-        cur = self._conn.execute(
-            "DELETE FROM cache_entries WHERE source = ? AND patch != ?", (source, current_patch)
-        )
-        self._conn.commit()
-        return cur.rowcount
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM cache_entries WHERE source = ? AND patch != ?", (source, current_patch)
+            )
+            self._conn.commit()
+            return cur.rowcount
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
 
 def _to_jsonable(value: Any) -> Any:

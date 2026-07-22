@@ -21,13 +21,28 @@ class Role(StrEnum):
 
 
 class RankBracket(StrEnum):
-    """Coarse rank tiers. Phase 1 placeholder -- align to OP.GG's real bracket
-    taxonomy once the MCP provider is wired up in Phase 2."""
+    """Matches OP.GG's real `tier` vocabulary exactly (confirmed live against
+    `lol_get_champion_analysis` in Phase 2) rather than the coarser 5-value
+    placeholder Phase 1 shipped with. `IBSG` (an OP.GG-defined aggregate band,
+    presumably Iron+Bronze+Silver+Gold) is intentionally omitted -- OP.GG doesn't
+    document what it covers, and guessing would be exactly the kind of silent
+    schema-guessing the project spec forbids."""
 
-    IRON_BRONZE = "iron_bronze"
-    SILVER_GOLD = "silver_gold"
-    PLATINUM_EMERALD = "platinum_emerald"
+    IRON = "iron"
+    BRONZE = "bronze"
+    SILVER = "silver"
+    GOLD = "gold"
+    GOLD_PLUS = "gold_plus"
+    PLATINUM = "platinum"
+    PLATINUM_PLUS = "platinum_plus"
+    EMERALD = "emerald"
+    EMERALD_PLUS = "emerald_plus"
+    DIAMOND = "diamond"
     DIAMOND_PLUS = "diamond_plus"
+    MASTER = "master"
+    MASTER_PLUS = "master_plus"
+    GRANDMASTER = "grandmaster"
+    CHALLENGER = "challenger"
     ALL = "all"
 
 
@@ -47,6 +62,11 @@ class ActionType(StrEnum):
 class DraftMode(StrEnum):
     SOLOQ = "soloq"
     TOURNAMENT = "tournament"
+
+
+class ProviderName(StrEnum):
+    MANUAL = "manual"
+    OPGG = "opgg"
 
 
 class Champion(BaseModel):
@@ -158,4 +178,5 @@ class DraftAction(BaseModel):
 class DraftState(BaseModel):
     mode: DraftMode
     rank: RankBracket = RankBracket.ALL
+    provider: ProviderName = ProviderName.MANUAL
     actions: list[DraftAction] = Field(default_factory=list)

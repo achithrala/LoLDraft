@@ -2,11 +2,13 @@
 
 Draft state is persisted between invocations as JSON at `.draftiq/state.json` in the
 current directory -- each command is a separate process, so there is nowhere else for
-"whose turn is it" to live in between.
+"whose turn is it" (or which provider a draft was started with) to live in between.
+`new --provider` picks the data source once and it's remembered from then on; every
+other command just reads it back out of the saved state.
 
-Phase 1 always uses `ManualCSVProvider`: it is the only provider with real win-rate
-data (Data Dragon is a champion registry only). Phase 2 wires in the OP.GG provider,
-likely behind a `--provider` flag.
+`manual` (the default) uses the offline synthetic dataset and needs no network.
+`opgg` talks to the live OP.GG MCP server -- see providers/opgg.py for the schema
+caveats (reconstructed win counts, sparse matchup coverage, position="all" synergy).
 """
 
 from __future__ import annotations
@@ -22,9 +24,19 @@ from rich.console import Console
 from rich.table import Table
 
 from draftiq.draft.state import DraftError, DraftStateMachine
-from draftiq.models import Champion, DraftMode, DraftState, RankBracket, Recommendation, Role, Side
+from draftiq.models import (
+    Champion,
+    DraftMode,
+    DraftState,
+    ProviderName,
+    RankBracket,
+    Recommendation,
+    Role,
+    Side,
+)
 from draftiq.providers.base import StatsProvider
 from draftiq.providers.manual import ManualCSVProvider
+from draftiq.providers.opgg import OpggProvider
 from draftiq.search.greedy import suggest as greedy_suggest
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
@@ -34,7 +46,9 @@ STATE_DIR = Path(".draftiq")
 STATE_FILE = STATE_DIR / "state.json"
 
 
-def _get_provider() -> StatsProvider:
+def _get_provider(provider_name: ProviderName) -> StatsProvider:
+    if provider_name is ProviderName.OPGG:
+        return OpggProvider()
     return ManualCSVProvider()
 
 
@@ -103,14 +117,20 @@ def new(
     rank: Annotated[
         RankBracket, typer.Option("--rank", help="Rank bracket for stats.")
     ] = RankBracket.ALL,
+    provider: Annotated[
+        ProviderName, typer.Option("--provider", help="Stats data source for this draft.")
+    ] = ProviderName.MANUAL,
 ) -> None:
     """Start a new draft, discarding any previous one."""
     if mode is not DraftMode.SOLOQ:
         console.print(f"[red]{mode.value} is not supported yet (Phase 2).[/red] Use --mode soloq.")
         raise typer.Exit(1)
-    sm = DraftStateMachine.new(mode, rank)
+    sm = DraftStateMachine.new(mode, rank, provider)
     _save_state_machine(sm)
-    console.print(f"Started a new [bold]{mode.value}[/bold] draft (rank: {rank.value}).")
+    console.print(
+        f"Started a new [bold]{mode.value}[/bold] draft "
+        f"(rank: {rank.value}, provider: {provider.value})."
+    )
     first_side, first_action = sm.current_side().value, sm.current_action_type().value
     console.print(f"First turn: [bold]{first_side}[/bold] {first_action}.")
 
@@ -119,7 +139,7 @@ def new(
 def ban(champion: Annotated[str, typer.Argument(help="Champion name to ban.")]) -> None:
     """Record a ban for whoever's turn it currently is."""
     sm = _load_state_machine()
-    provider = _get_provider()
+    provider = _get_provider(sm.state.provider)
     champ = _resolve_champion(champion, provider.get_champions())
     try:
         side = sm.current_side()
@@ -143,7 +163,7 @@ def pick(
 ) -> None:
     """Record a pick for whoever's turn it currently is."""
     sm = _load_state_machine()
-    provider = _get_provider()
+    provider = _get_provider(sm.state.provider)
     champ = _resolve_champion(champion, provider.get_champions())
     try:
         acting_side = sm.current_side()
@@ -163,7 +183,7 @@ def suggest(
 ) -> None:
     """Rank legal champions for the current turn's role."""
     sm = _load_state_machine()
-    provider = _get_provider()
+    provider = _get_provider(sm.state.provider)
     if sm.is_complete():
         console.print("[yellow]The draft is complete -- nothing left to suggest.[/yellow]")
         raise typer.Exit(1)
@@ -178,14 +198,17 @@ def suggest(
 def show_state() -> None:
     """Print the current draft state: bans, picks, and whose turn is next."""
     sm = _load_state_machine()
-    provider = _get_provider()
+    provider = _get_provider(sm.state.provider)
     champion_by_id = {c.champion_id: c for c in provider.get_champions()}
 
     def name_of(champion_id: int) -> str:
         champ = champion_by_id.get(champion_id)
         return champ.name if champ is not None else f"#{champion_id}"
 
-    console.print(f"Mode: [bold]{sm.state.mode.value}[/bold]  Rank: {sm.state.rank.value}")
+    console.print(
+        f"Mode: [bold]{sm.state.mode.value}[/bold]  Rank: {sm.state.rank.value}  "
+        f"Provider: {sm.state.provider.value}"
+    )
 
     bans = [a for a in sm.state.actions if a.action_type.value == "ban"]
     console.print(f"\nBans ({len(bans)}):")
