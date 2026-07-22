@@ -23,9 +23,13 @@ uv run draftiq suggest --role top           # picks: ranked recommendations, wit
 uv run draftiq suggest --role top --lookahead  # ...also weighing the opponent's likely reply
 uv run draftiq suggest --any-role           # picks: ranked across all your unfilled roles at once
 uv run draftiq state                        # show the full draft so far
+uv run draftiq serve                        # local web UI at http://127.0.0.1:8765
 ```
 
-Draft state is saved to `.draftiq/state.json` in the current directory between runs.
+Draft state is saved to `.draftiq/state.json` in the current directory between runs --
+`draftiq serve`'s web UI reads/writes the exact same file, so the CLI and a browser
+tab can drive one live draft interchangeably. The web UI is local-only (no auth,
+binds `127.0.0.1` by default) and single-draft, matching the CLI's own trust model.
 
 ## Project layout
 
@@ -66,10 +70,28 @@ Draft state is saved to `.draftiq/state.json` in the current directory between r
     either way.
   - `state` -- prints mode/rank/provider, all bans, both sides' picks, and whose
     turn is next.
-  - Private helpers: `_get_provider` (picks `ManualCSVProvider`/`OpggProvider` from
-    the saved state), `_load_state_machine`/`_save_state_machine`
-    (`.draftiq/state.json` round-trip), `_resolve_champion` (name matching),
-    `_render_recommendations` / `_render_build` (the `rich` output for each).
+  - `serve [--host] [--port]` -- launches the local web UI (`web/app.py`) via
+    `uvicorn`, binding `127.0.0.1` by default. Reads/writes the exact same
+    `.draftiq/state.json`, so a browser tab and the CLI can drive the same live
+    draft. `fastapi`/`uvicorn` are imported lazily inside this command only, so
+    every other command stays independent of the web dependencies.
+  - Private helpers: `_get_provider`/`_load_state_machine`/`_save_state_machine`
+    (thin wrappers around `persistence.py`, adding `rich`/`typer.Exit` presentation
+    on top), `_resolve_champion` (fuzzy name matching, CLI-only -- the web UI uses
+    exact `champion_id` selection instead), `_render_recommendations` /
+    `_render_build` (the `rich` output for each).
+- `persistence.py` -- draft-state file I/O and provider resolution, shared by
+  `cli.py` and `web/app.py` so both front ends drive the same `.draftiq/state.json`
+  identically:
+  - `STATE_DIR`/`STATE_FILE`, `get_provider(name)` (`ManualCSVProvider`/
+    `OpggProvider`), `load_state_machine()`/`save_state_machine(sm)` -- raise plain
+    exceptions (`NoDraftInProgressError`, or a propagated `ValidationError`/
+    `JSONDecodeError` for a corrupt file) rather than doing any CLI/HTTP-specific
+    presentation.
+  - `STATE_LOCK` -- a `threading.Lock`, used only by `web/app.py` (the CLI is a
+    fresh single-threaded process per invocation, so a lock provides no benefit
+    there). Serializes each mutating web request's load-mutate-save cycle so two
+    concurrent browser requests can't race and silently clobber one another's write.
 
 **`src/draftiq/providers/`** -- each data source implements the same `StatsProvider`
 Protocol, so nothing else in the codebase knows or cares which one it's talking to.
@@ -198,13 +220,55 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
   shape as counterpick exposure) for champions likely to get taken if you wait.
   Opt-in via `draftiq suggest --any-role`; picks only, and not combinable with
   `--lookahead` yet.
+- `dispatch.py` -- `resolve_suggestion(sm, provider, role, top_n, lookahead,
+  any_role) -> (recommendations, show_role_column)`: the CLI's original
+  `suggest` if/elif chain (ban vs. any-role vs. role-locked pick, and the exact
+  three validation-error strings), extracted so `cli.suggest` and the web
+  `suggest` endpoint share one implementation and can never disagree about what's
+  valid. `SuggestRequestError` (a `ValueError` subclass) covers the three
+  validation cases; a plain `ValueError` from the underlying search module (e.g.
+  "already complete") can still surface too -- callers catch `ValueError`
+  broadly.
+
+**`src/draftiq/web/`** -- the local web UI: a FastAPI app re-exposing the same
+`DraftStateMachine`/`StatsProvider`/`search/*` logic over HTTP, plus a static
+frontend. Local-only (no auth, `127.0.0.1` by default), single shared
+`.draftiq/state.json` -- see CLAUDE.md's "Phase 3" section for the full reasoning
+(concurrency locking, why `--workers` is never exposed, champion-id validation the
+CLI never needed, provider memoization).
+
+- `app.py` -- `create_app() -> FastAPI`. Routes: `POST /api/draft/new`,
+  `POST /api/draft/ban`, `POST /api/draft/pick`, `GET /api/draft/state`,
+  `GET /api/draft/build`, `GET /api/draft/suggest`, `GET /api/champions`,
+  `GET /api/health`, plus `GET /` serving `static/index.html`. Global exception
+  handlers map `persistence.NoDraftInProgressError` -> 404, `ValueError` from a
+  corrupt `state.json` -> 500, and `draft.state.DraftError` subclasses -> 409;
+  per-route `try`/`except` handles unknown `champion_id`s and `suggest`/`build`'s
+  own errors -> 400/404. Every mutating route holds `persistence.STATE_LOCK`
+  across its whole load-mutate-save critical section.
+- `schemas.py` -- request/response pydantic models not already covered by
+  `models.py` (`NewDraftRequest`, `BanRequest`, `PickRequest`,
+  `DraftStateResponse`/`DraftActionOut` + `build_state_response(sm, provider)`),
+  plus `resolve_champion_id(champion_id, champions)`/`UnknownChampionIdError` --
+  the exact-id equivalent of `cli._resolve_champion`'s fuzzy name matching.
+  `Recommendation`, `Champion`, and `Build` from `models.py` are reused directly
+  as response bodies elsewhere.
+- `static/index.html` / `app.js` / `style.css` -- one page, zero build tooling
+  (no npm/node/framework): a new-draft form, ban/pick board, champion picker
+  (search + click, backed by `GET /api/champions`), a suggestions table with
+  Lookahead/Any-role toggles that mirror `dispatch.py`'s mutual-exclusion rules
+  client-side, and a build panel. Every mutating action re-fetches
+  `GET /api/draft/state` and re-renders from scratch -- the server is always the
+  source of truth, no separate client-side draft logic.
 
 **`tests/`** -- one file per module above (`test_shrinkage.py`, `test_draft_state.py`,
 `test_scoring.py`, `test_composition.py`, `test_exposure.py`, `test_lookahead.py`,
-`test_ban.py`, `test_opgg_format.py`, `test_opgg_provider.py`), plus
-`test_e2e_cli.py` (full offline SOLOQ and TOURNAMENT drafts driven entirely through
-the CLI, no network access). The OP.GG tests use `httpx.MockTransport` with real
-captured server responses -- no live network calls in the test suite.
+`test_ban.py`, `test_priority.py`, `test_opgg_format.py`, `test_opgg_provider.py`),
+plus `test_e2e_cli.py` (full offline SOLOQ and TOURNAMENT drafts driven entirely
+through the CLI, no network access) and `test_e2e_web.py` (the same, driven through
+the web API via `fastapi.testclient.TestClient`, itself built on the already-approved
+`httpx`). The OP.GG tests use `httpx.MockTransport` with real captured server
+responses -- no live network calls anywhere in the test suite.
 
 **`data/`**
 

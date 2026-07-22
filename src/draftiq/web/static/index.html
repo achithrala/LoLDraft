@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>draftiq</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>draftiq</h1>
+    <div id="status-bar">No draft in progress.</div>
+  </header>
+
+  <div id="error-banner" class="error-banner" hidden></div>
+
+  <main>
+    <section id="new-draft-panel">
+      <h2>New Draft</h2>
+      <form id="new-draft-form">
+        <label>Mode
+          <select id="mode">
+            <option value="soloq">SOLOQ</option>
+            <option value="tournament">Tournament</option>
+          </select>
+        </label>
+        <label>Rank
+          <select id="rank"></select>
+        </label>
+        <label>Provider
+          <select id="provider">
+            <option value="manual">Manual (offline)</option>
+            <option value="opgg">OP.GG (live)</option>
+          </select>
+        </label>
+        <button type="submit">Start Draft</button>
+      </form>
+    </section>
+
+    <section id="board-panel">
+      <h2>Draft Board</h2>
+      <div id="bans"></div>
+      <div class="board-columns">
+        <div class="side">
+          <h3>Blue</h3>
+          <div id="blue-picks"></div>
+        </div>
+        <div class="side">
+          <h3>Red</h3>
+          <div id="red-picks"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="picker-panel">
+      <h2>Champion Picker</h2>
+      <input id="champion-search" type="text" placeholder="Search champions..." />
+      <div id="champion-list" class="champion-list"></div>
+      <div id="role-selector" class="role-selector" hidden>
+        <p>Pick which role this fills:</p>
+        <div id="role-buttons"></div>
+      </div>
+    </section>
+
+    <section id="suggestions-panel">
+      <h2>Suggestions</h2>
+      <div id="suggest-controls">
+        <label>Role
+          <select id="suggest-role"></select>
+        </label>
+        <label><input type="checkbox" id="lookahead-toggle" /> Lookahead</label>
+        <label><input type="checkbox" id="any-role-toggle" /> Any role</label>
+      </div>
+      <table id="suggestions-table">
+        <thead></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="build-panel">
+      <h2>Build</h2>
+      <div id="build-controls">
+        <select id="build-champion"></select>
+        <select id="build-role"></select>
+        <select id="build-opponent"></select>
+        <button id="show-build" type="button">Show Build</button>
+      </div>
+      <div id="build-result"></div>
+    </section>
+  </main>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

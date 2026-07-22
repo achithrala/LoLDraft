@@ -1,35 +1,39 @@
-"""The `draftiq` CLI: `new`, `ban`, `pick`, `build`, `suggest`, `state`.
+"""The `draftiq` CLI: `new`, `ban`, `pick`, `build`, `suggest`, `state`, `serve`.
 
 Draft state is persisted between invocations as JSON at `.draftiq/state.json` in the
 current directory -- each command is a separate process, so there is nowhere else for
 "whose turn is it" (or which provider a draft was started with) to live in between.
 `new --provider` picks the data source once and it's remembered from then on; every
-other command just reads it back out of the saved state.
+other command just reads it back out of the saved state. `persistence.py` owns this
+file I/O and provider resolution now, shared with the web UI (`web/app.py`) so both
+can drive the same live draft; `search/dispatch.py` owns `suggest`'s ban/any-role/
+role-locked-pick branching for the same reason.
 
 `manual` (the default) uses the offline synthetic dataset and needs no network.
 `opgg` talks to the live OP.GG MCP server -- see providers/opgg.py for the schema
 caveats (reconstructed win counts, sparse matchup coverage, position="all" synergy).
+
+`serve` launches a local-only web UI (see web/app.py) on top of the same state file --
+`fastapi`/`uvicorn` are imported lazily inside that command so every other command
+stays independent of the web dependencies.
 """
 
 from __future__ import annotations
 
 import difflib
-import json
-from pathlib import Path
 from typing import Annotated
 
 import typer
-from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
+from draftiq import persistence
 from draftiq.draft.state import DraftError, DraftStateMachine
 from draftiq.models import (
     ActionType,
     Build,
     Champion,
     DraftMode,
-    DraftState,
     ProviderName,
     RankBracket,
     Recommendation,
@@ -37,41 +41,29 @@ from draftiq.models import (
     Side,
 )
 from draftiq.providers.base import StatsProvider
-from draftiq.providers.manual import ManualCSVProvider
-from draftiq.providers.opgg import OpggProvider
-from draftiq.search.ban import suggest_bans
-from draftiq.search.greedy import suggest as greedy_suggest
-from draftiq.search.lookahead import suggest_with_lookahead
-from draftiq.search.priority import suggest_priority
+from draftiq.search.dispatch import SuggestRequestError, resolve_suggestion
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
 
-STATE_DIR = Path(".draftiq")
-STATE_FILE = STATE_DIR / "state.json"
-
 
 def _get_provider(provider_name: ProviderName) -> StatsProvider:
-    if provider_name is ProviderName.OPGG:
-        return OpggProvider()
-    return ManualCSVProvider()
+    return persistence.get_provider(provider_name)
 
 
 def _load_state_machine() -> DraftStateMachine:
-    if not STATE_FILE.exists():
-        console.print("[red]No draft in progress.[/red] Run [bold]draftiq new[/bold] first.")
-        raise typer.Exit(1)
     try:
-        state = DraftState.model_validate_json(STATE_FILE.read_text())
-    except (ValidationError, json.JSONDecodeError) as e:
-        console.print(f"[red]Could not read {STATE_FILE}:[/red] {e}")
+        return persistence.load_state_machine()
+    except persistence.NoDraftInProgressError as e:
+        console.print("[red]No draft in progress.[/red] Run [bold]draftiq new[/bold] first.")
         raise typer.Exit(1) from e
-    return DraftStateMachine(state)
+    except ValueError as e:
+        console.print(f"[red]Could not read {persistence.STATE_FILE}:[/red] {e}")
+        raise typer.Exit(1) from e
 
 
 def _save_state_machine(sm: DraftStateMachine) -> None:
-    STATE_DIR.mkdir(exist_ok=True)
-    STATE_FILE.write_text(sm.state.model_dump_json(indent=2))
+    persistence.save_state_machine(sm)
 
 
 def _resolve_champion(name: str, champions: list[Champion]) -> Champion:
@@ -267,34 +259,26 @@ def suggest(
     side = sm.current_side()
     action = sm.current_action_type()
 
+    try:
+        recs, show_role = resolve_suggestion(sm, provider, role, top, lookahead, any_role)
+    except SuggestRequestError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from e
+    except ValueError as e:
+        console.print(f"[yellow]{e}[/yellow]")
+        raise typer.Exit(1) from e
+
     if action is ActionType.BAN:
-        if any_role:
-            console.print("[red]--any-role only applies to picks; bans aren't role-locked.[/red]")
-            raise typer.Exit(1)
         console.print(f"Suggesting bans for {side.value}:")
-        recs = suggest_bans(sm, provider, top_n=top)
-        _render_recommendations(recs)
     elif any_role:
-        if lookahead:
-            console.print("[red]--any-role and --lookahead can't be combined yet.[/red]")
-            raise typer.Exit(1)
         console.print(f"Suggesting priority picks for {side.value} (any role):")
-        try:
-            recs = suggest_priority(sm, provider, top_n=top)
-        except ValueError as e:
-            console.print(f"[yellow]{e}[/yellow]")
-            raise typer.Exit(1) from e
-        _render_recommendations(recs, show_role=True)
     else:
-        if role is None:
-            console.print("[red]--role is required when suggesting a pick.[/red]")
-            raise typer.Exit(1)
+        # resolve_suggestion() would have raised SuggestRequestError above if role
+        # were None here (BAN handled, any_role handled -- only the role-locked pick
+        # path remains, which requires a role).
+        assert role is not None
         console.print(f"Suggesting for {side.value}'s {action.value} ({role.value}):")
-        if lookahead:
-            recs = suggest_with_lookahead(sm, provider, role, top_n=top)
-        else:
-            recs = greedy_suggest(sm, provider, role, top_n=top)
-        _render_recommendations(recs)
+    _render_recommendations(recs, show_role=show_role)
 
 
 @app.command(name="state")
@@ -340,6 +324,24 @@ def _print_next_turn(sm: DraftStateMachine) -> None:
     else:
         next_side, next_action = sm.current_side().value, sm.current_action_type().value
         console.print(f"Next: [bold]{next_side} {next_action}[/bold]")
+
+
+@app.command()
+def serve(
+    host: Annotated[
+        str,
+        typer.Option("--host", help="Bind address. Keep 127.0.0.1 for local-only use."),
+    ] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="Port to listen on.")] = 8765,
+) -> None:
+    """Launch the local web UI. Reads/writes the same .draftiq/state.json as the CLI,
+    so the browser and other `draftiq` commands can drive the same draft."""
+    import uvicorn
+
+    from draftiq.web.app import create_app
+
+    console.print(f"Serving draftiq at [bold]http://{host}:{port}[/bold] (Ctrl+C to stop).")
+    uvicorn.run(create_app(), host=host, port=port)
 
 
 if __name__ == "__main__":

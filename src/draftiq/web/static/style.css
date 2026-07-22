@@ -1,0 +1,142 @@
+:root {
+  color-scheme: light dark;
+  --border: #888;
+  --accent: #3b6ea5;
+  --bg-muted: rgba(128, 128, 128, 0.12);
+}
+
+body {
+  font-family: system-ui, sans-serif;
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 1rem;
+  line-height: 1.4;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+#status-bar {
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+
+.error-banner {
+  background: #a33;
+  color: #fff;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+}
+
+section {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+section h2 {
+  margin-top: 0;
+  font-size: 1.05rem;
+}
+
+form label,
+#suggest-controls label,
+#build-controls select {
+  margin-right: 0.75rem;
+}
+
+.board-columns {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.side {
+  flex: 1;
+}
+
+.side ul,
+#bans ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.side li,
+#bans li {
+  padding: 0.2rem 0.4rem;
+  border-radius: 3px;
+}
+
+.side li.next-turn {
+  background: var(--bg-muted);
+  font-weight: bold;
+  outline: 1px dashed var(--accent);
+}
+
+.champion-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-height: 220px;
+  overflow-y: auto;
+  margin-top: 0.5rem;
+}
+
+.champion-list button {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+.champion-list button:disabled {
+  opacity: 0.35;
+  text-decoration: line-through;
+}
+
+.role-selector {
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+#role-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  padding: 0.3rem 0.5rem;
+  vertical-align: top;
+}
+
+#build-result p {
+  margin: 0.25rem 0;
+}
+
+input,
+select,
+button {
+  font-size: 0.9rem;
+}

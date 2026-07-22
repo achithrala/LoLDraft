@@ -23,8 +23,9 @@ ban-specific recommendations (`search/ban.py`, automatic when `draftiq suggest` 
 during a ban step); build display (`draftiq build CHAMPION --role ROLE
 [--opponent CHAMPION]`).
 
-Phase 3 (not started): TUI/web UI, LLM-generated tips, per-player champion pool
-weighting.
+**Phase 3: in progress.** Local web UI complete (`web/app.py` + `web/static/`, launched
+via `draftiq serve`). LLM-generated tips and per-player champion pool weighting not
+started.
 
 **Post-Phase 2 addition: champion-priority / flex-pick suggestions.** Not in the
 original spec. `search/priority.py` (`suggest_priority`, wired into the CLI as
@@ -45,6 +46,96 @@ including a documented bug-and-fix: a naive version let a champion's *unplayed* 
 confirmed live against the manual dataset, where every single champion was getting
 flagged as a 4-5 role flex pick before the fix. Both best-role selection and the flex
 bonus now require `n_games > 0` in a role before it can count at all.
+
+## Phase 3: local web UI (read before touching `web/`, `persistence.py`, or
+`search/dispatch.py`)
+
+- **Local-only by design, confirmed with the user before building it.** No auth, binds
+  `127.0.0.1` by default, single shared `.draftiq/state.json` -- the same trust model
+  the CLI already has, not a multi-user or LAN-shareable tool. `draftiq serve` is the
+  only supported way to run it; it deliberately never exposes a `--workers` flag (see
+  the STATE_LOCK bullet below for why that would be actively dangerous, not just
+  unnecessary).
+
+- **The CLI and the web UI read/write the exact same `.draftiq/state.json`.** This was
+  a deliberate simplicity choice over multi-draft/session support (also confirmed with
+  the user) -- `draftiq ban X` from a terminal and a browser tab pointed at
+  `draftiq serve` in the same directory drive the identical live draft
+  interchangeably. There is no session concept anywhere in `web/app.py`.
+
+- **`persistence.py` and `search/dispatch.py` are new shared modules, extracted from
+  what used to be CLI-only private helpers**, specifically so the web API and the CLI
+  can never disagree about behavior:
+  - `persistence.py` owns `STATE_DIR`/`STATE_FILE`, `get_provider`,
+    `load_state_machine`/`save_state_machine` (moved verbatim out of `cli.py`, now
+    raising plain exceptions -- `NoDraftInProgressError`, or letting
+    `pydantic.ValidationError`/`json.JSONDecodeError` propagate for a corrupt file --
+    instead of calling `typer.Exit`/`console.print`, so each front end renders errors
+    its own way). `cli.py`'s `_load_state_machine`/`_save_state_machine` are now thin
+    wrappers that add back the CLI's presentation; `tests/test_e2e_cli.py` needed zero
+    changes.
+  - `search/dispatch.py`'s `resolve_suggestion(sm, provider, role, top_n, lookahead,
+    any_role)` is `cli.suggest`'s old if/elif chain (ban vs. any-role vs.
+    role-locked pick, and the exact three validation error strings), now shared by
+    `cli.suggest` and the web `suggest` endpoint. `SuggestRequestError` (a `ValueError`
+    subclass) is raised for the three validation cases; the underlying search modules
+    can still raise a plain `ValueError` on their own (e.g. "already complete") --
+    callers must catch `ValueError` broadly, not just `SuggestRequestError`, since the
+    latter *is* the former.
+
+- **`persistence.STATE_LOCK` (a plain `threading.Lock`) is a web-only concern, not
+  used by the CLI at all.** Each CLI invocation is a separate, single-threaded OS
+  process, so an in-process `Lock` object provides zero cross-process protection --
+  it was never the mitigation for CLI-vs-CLI races (those are out of scope by design,
+  same as before this feature). The web server is long-lived and *can* receive
+  genuinely concurrent requests (two browser tabs, a double-click), where two racing
+  mutations would otherwise both read the same on-disk state, compute independently,
+  and let the second write silently clobber the first -- the same class of bug already
+  fixed once for `SQLiteCache` during OP.GG prefetching (`providers/cache.py`).
+  `web/app.py`'s mutating routes hold the lock across the *entire* load-mutate-save
+  critical section (not per-call), and read-only routes hold it across their single
+  load too, since `write_text(...)` isn't atomic and a concurrent read mid-write could
+  see a torn file. This is also exactly why `serve` must never expose `--workers`:
+  separate uvicorn worker processes would each get their own independent `Lock`
+  object, silently defeating this the same way multiple CLI processes already would.
+
+- **The web API validates `champion_id` against the active provider's roster; the CLI
+  never had to.** `DraftStateMachine.apply_ban`/`apply_pick` only check
+  `champion_id in taken_champion_ids()` (duplicate/already-taken) -- they have no
+  concept of whether an id is a *real* champion, because the CLI is only safe today
+  since `_resolve_champion` always resolves through `provider.get_champions()` first.
+  The web API accepts a bare `champion_id: int` directly (an exact-match picker UI is
+  the natural web equivalent of the CLI's fuzzy name matching, not a reimplementation
+  of `difflib` fuzzy matching over HTTP), so `web/schemas.py`'s
+  `resolve_champion_id`/`UnknownChampionIdError` fill that gap -- used by the
+  ban/pick/build routes, mapped to `400`.
+
+- **Provider instances are memoized on `app.state`, keyed by `ProviderName`,** unlike
+  the CLI where `_get_provider` builds a fresh one every invocation (each CLI command
+  is a new process anyway). Both `StatsProvider` implementations are stateless/
+  read-only after construction, so this just avoids re-parsing the manual CSVs or
+  re-opening `OpggProvider`'s SQLite cache connection on every single request.
+
+- **`GET /api/champions` requires an active draft**, 404 otherwise -- it needs
+  `sm.state.provider` to know which `StatsProvider` to ask, exactly like every other
+  route already needs a loaded draft first. Not a limitation worth working around: the
+  frontend's champion picker only ever appears after a draft exists anyway.
+
+- **The frontend (`web/static/`) is plain HTML/CSS/vanilla JS, zero build tooling** --
+  no npm, no node, no framework, one `<script type="module">` doing `fetch()` calls
+  and DOM updates. This was a deliberate choice to avoid introducing a second package
+  ecosystem alongside the project's all-Python one for what is a single page with five
+  panels (new-draft form, ban/pick board, champion picker, suggestions table, build
+  panel). Every mutating action re-fetches `GET /api/draft/state` and re-renders from
+  scratch -- there is no separate client-side draft state machine; the server is
+  always the source of truth, matching the "no auth, single local user" trust model.
+  The Lookahead/Any-role checkboxes mirror `search/dispatch.py`'s mutual-exclusion
+  rules client-side for UX, but the backend's `400`s remain the actual source of
+  truth (a user could still hit the API directly).
+
+- **`fastapi`/`uvicorn` are imported lazily inside `cli.py`'s `serve` command**, not at
+  module level, so every other CLI command stays fast and independent of the web
+  dependencies even if something's wrong with them.
 
 ## OP.GG schema notes (read before touching `providers/opgg.py`)
 
@@ -238,9 +329,13 @@ should fail first.
 
 ## Approved dependencies
 
-`httpx`, `pydantic` (v2), `typer`, `rich`, stdlib `sqlite3`/`threading`/
-`concurrent.futures`/`tomllib`, `pytest`, `mypy`, `ruff`. Nothing else without asking
-first (see the spec doc). Notably: no MCP SDK dependency was needed for the OP.GG
-provider -- `httpx` alone is enough, since every response observed from the live
-server is plain JSON over HTTP POST (never SSE). No `pyyaml` either -- see the
-composition-features bullet above.
+`httpx`, `pydantic` (v2), `typer`, `rich`, `fastapi`, `uvicorn` (base package, not
+`uvicorn[standard]` -- see the Phase 3 section above for why: no websockets, no
+`--reload`, no `.env` loading, so none of the `[standard]` extras are needed), stdlib
+`sqlite3`/`threading`/`concurrent.futures`/`tomllib`, `pytest`, `mypy`, `ruff`. Nothing
+else without asking first (see the spec doc). Notably: no MCP SDK dependency was
+needed for the OP.GG provider -- `httpx` alone is enough, since every response
+observed from the live server is plain JSON over HTTP POST (never SSE). No `pyyaml`
+either -- see the composition-features bullet above. No `jinja2`/frontend framework
+either -- the web UI's frontend is static HTML/CSS/vanilla JS with zero build tooling,
+see the Phase 3 section.
