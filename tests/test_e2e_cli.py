@@ -65,6 +65,10 @@ def test_full_soloq_draft_completes_offline() -> None:
     suggest_output = _run("suggest", "--role", "top")
     assert "Jax" in suggest_output or "Aatrox" in suggest_output or "Darius" in suggest_output
 
+    build_output = _run("build", "Aatrox", "--role", "top")
+    assert "Aatrox build" in build_output
+    assert "Items:" in build_output
+
     for champ, role in PICKS:
         _run("pick", champ, "--role", role)
 
@@ -133,3 +137,40 @@ def test_suggest_before_new_fails_cleanly() -> None:
     result = runner.invoke(app, ["suggest", "--role", "top"])
     assert result.exit_code != 0
     assert "No draft in progress" in result.output
+
+
+def test_suggest_without_role_during_pick_phase_fails_cleanly() -> None:
+    _run("new")
+    for champ in BANS:
+        _run("ban", champ)
+    result = runner.invoke(app, ["suggest"])
+    assert result.exit_code != 0
+    assert "--role is required" in result.output
+
+
+def test_suggest_with_no_role_during_ban_phase_shows_ban_recommendations() -> None:
+    _run("new")
+    output = _run("suggest")
+    assert "Suggesting bans for blue" in output
+
+
+def test_build_shows_items_runes_skills_summoners() -> None:
+    _run("new")
+    output = _run("build", "Jinx", "--role", "bottom")
+    assert "Jinx build (bottom" in output
+    assert "Items:" in output
+    assert "Skill order:" in output
+    assert "Summoners:" in output
+
+
+def test_build_rejects_unknown_champion() -> None:
+    _run("new")
+    result = runner.invoke(app, ["build", "NotAChampion", "--role", "top"])
+    assert result.exit_code != 0
+    assert "Unknown champion" in result.output
+
+
+def test_build_accepts_optional_opponent() -> None:
+    _run("new")
+    output = _run("build", "Aatrox", "--role", "top", "--opponent", "Darius")
+    assert "Aatrox build" in output

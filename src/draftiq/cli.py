@@ -1,4 +1,4 @@
-"""The `draftiq` CLI: `new`, `ban`, `pick`, `suggest`, `state`.
+"""The `draftiq` CLI: `new`, `ban`, `pick`, `build`, `suggest`, `state`.
 
 Draft state is persisted between invocations as JSON at `.draftiq/state.json` in the
 current directory -- each command is a separate process, so there is nowhere else for
@@ -26,6 +26,7 @@ from rich.table import Table
 from draftiq.draft.state import DraftError, DraftStateMachine
 from draftiq.models import (
     ActionType,
+    Build,
     Champion,
     DraftMode,
     DraftState,
@@ -114,6 +115,25 @@ def _render_recommendations(recs: list[Recommendation]) -> None:
     console.print(table)
 
 
+def _render_build(champion_name: str, build: Build) -> None:
+    console.print(
+        f"\n[bold]{champion_name}[/bold] build ({build.role.value}, patch {build.patch}):"
+    )
+    comma_rows = [
+        ("Starting", build.starting_items),
+        ("Items", build.items),
+        ("Primary runes", build.runes_primary),
+        ("Secondary runes", build.runes_secondary),
+        ("Shards", build.rune_shards),
+        ("Summoners", build.summoner_spells),
+    ]
+    for label, values in comma_rows:
+        if values:
+            console.print(f"  {label}: {', '.join(values)}")
+    if build.skill_order:
+        console.print(f"  Skill order: {' > '.join(build.skill_order)}")
+
+
 @app.command()
 def new(
     mode: Annotated[DraftMode, typer.Option("--mode", help="Draft format.")] = DraftMode.SOLOQ,
@@ -174,6 +194,31 @@ def pick(
     _save_state_machine(sm)
     console.print(f"{acting_side.value} picked [bold]{champ.name}[/bold] ({role.value}).")
     _print_next_turn(sm)
+
+
+@app.command()
+def build(
+    champion: Annotated[str, typer.Argument(help="Champion name.")],
+    role: Annotated[Role, typer.Option("--role", help="Role to show the build for.")],
+    opponent: Annotated[
+        str | None,
+        typer.Option("--opponent", help="Matchup-specific build, if the provider supports it."),
+    ] = None,
+) -> None:
+    """Show recommended items, runes, skill order, and summoners for a champion."""
+    sm = _load_state_machine()
+    provider = _get_provider(sm.state.provider)
+    champions = provider.get_champions()
+    champ = _resolve_champion(champion, champions)
+    opponent_id = (
+        _resolve_champion(opponent, champions).champion_id if opponent is not None else None
+    )
+    try:
+        result = provider.get_build(champ.champion_id, role, sm.state.rank, opponent_id=opponent_id)
+    except (NotImplementedError, KeyError) as e:
+        console.print(f"[red]No build data available for {champ.name} ({role.value}):[/red] {e}")
+        raise typer.Exit(1) from e
+    _render_build(champ.name, result)
 
 
 @app.command()

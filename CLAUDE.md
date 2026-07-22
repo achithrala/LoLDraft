@@ -11,16 +11,17 @@ registry only), manual CSV provider, SQLite cache, shrinkage math, greedy scorer
 (base rate + matchup + synergy deltas), SOLOQ draft state machine, CLI (`new`/`ban`/
 `pick`/`suggest`/`state`).
 
-**Phase 2: in progress.** Done so far: OP.GG MCP provider (`providers/opgg.py`) with
-its own compact-response parser (`providers/opgg_format.py`), wired into the CLI
-behind `draftiq new --provider {manual,opgg}`, `RankBracket` redesigned to match
-OP.GG's real tier vocabulary, composition fit (`stats/composition.py` +
-`data/composition_features.toml`), counterpick exposure (`stats/exposure.py`) -- all
-5 score terms from the spec are now implemented in `score_candidate` -- 2-ply
-lookahead (`search/lookahead.py`, opt-in via `draftiq suggest --lookahead`),
-TOURNAMENT draft mode (`draft/rules.py`, `draftiq new --mode tournament`), and
-ban-specific recommendations (`search/ban.py`, automatic when `draftiq suggest` is
-run during a ban step). Still to do: build display in the CLI.
+**Phase 2: complete.** OP.GG MCP provider (`providers/opgg.py`) with its own
+compact-response parser (`providers/opgg_format.py`), wired into the CLI behind
+`draftiq new --provider {manual,opgg}`; `RankBracket` redesigned to match OP.GG's
+real tier vocabulary; composition fit (`stats/composition.py` +
+`data/composition_features.toml`) and counterpick exposure (`stats/exposure.py`) --
+all 5 score terms from the spec are implemented in `score_candidate`; 2-ply
+lookahead (`search/lookahead.py`, opt-in via `draftiq suggest --lookahead`);
+TOURNAMENT draft mode (`draft/rules.py`, `draftiq new --mode tournament`);
+ban-specific recommendations (`search/ban.py`, automatic when `draftiq suggest` runs
+during a ban step); build display (`draftiq build CHAMPION --role ROLE
+[--opponent CHAMPION]`).
 
 Phase 3 (not started): TUI/web UI, LLM-generated tips, per-player champion pool
 weighting.
@@ -150,6 +151,15 @@ should fail first.
   asks a genuinely different question -- see `search/ban.py`'s docstring for how it
   reuses `score_candidate` with the sides swapped to get "how good would this be
   for the opponent" without a second scoring formula.
+
+- **`draftiq build` is a thin renderer, not new logic.** Both providers already
+  implement `get_build` (Phase 1 for `ManualCSVProvider`, Phase 2 for
+  `OpggProvider`) -- the command just resolves champion names, calls it, and prints
+  the result. `NotImplementedError`/`KeyError` from the provider (no build data for
+  that champion/role) are caught and shown as a clean CLI error rather than a
+  traceback. `--opponent` is accepted per the `StatsProvider.get_build` signature
+  but currently only ever ignored: neither provider has opponent-specific build
+  data (`OpggProvider`'s reason is documented in `providers/opgg.py`).
 
 - **Beta credible intervals are computed without scipy.** The Beta distribution's
   quantile function is implemented from scratch in `stats/shrinkage.py`: the

@@ -17,6 +17,7 @@ uv run draftiq new --mode tournament        # ...or the standard competitive dra
 uv run draftiq new --provider opgg          # ...or backed by live OP.GG win-rate data
 uv run draftiq ban Yasuo                    # ban/pick follow whoever's turn it is
 uv run draftiq pick Aatrox --role top
+uv run draftiq build Aatrox --role top      # items, runes, skill order, summoners
 uv run draftiq suggest                      # bans: ranked by how much denying them hurts the opponent
 uv run draftiq suggest --role top           # picks: ranked recommendations, with explanations
 uv run draftiq suggest --role top --lookahead  # ...also weighing the opponent's likely reply
@@ -48,6 +49,10 @@ Draft state is saved to `.draftiq/state.json` in the current directory between r
   - `ban CHAMPION` / `pick CHAMPION --role ROLE [--side SIDE]` -- resolves the
     champion name (exact/fuzzy match against the provider's registry, or a
     "did you mean" hint), applies it via `DraftStateMachine`, saves state.
+  - `build CHAMPION --role ROLE [--opponent CHAMPION]` -- resolves the champion
+    (and opponent, if given), calls the provider's `get_build`, and prints items,
+    runes, skill order, and summoners. A thin renderer -- both providers already
+    implement `get_build`.
   - `suggest [--role ROLE] [--top N] [--lookahead]` -- dispatches on the current
     action: picks (`--role` required) go through `search/greedy.suggest` (or
     `search/lookahead.suggest_with_lookahead` with `--lookahead`); bans (`--role`
@@ -58,7 +63,7 @@ Draft state is saved to `.draftiq/state.json` in the current directory between r
   - Private helpers: `_get_provider` (picks `ManualCSVProvider`/`OpggProvider` from
     the saved state), `_load_state_machine`/`_save_state_machine`
     (`.draftiq/state.json` round-trip), `_resolve_champion` (name matching),
-    `_render_recommendations` (the `rich` table).
+    `_render_recommendations` / `_render_build` (the `rich` output for each).
 
 **`src/draftiq/providers/`** -- each data source implements the same `StatsProvider`
 Protocol, so nothing else in the codebase knows or cares which one it's talking to.
