@@ -25,6 +25,7 @@ from rich.table import Table
 
 from draftiq.draft.state import DraftError, DraftStateMachine
 from draftiq.models import (
+    ActionType,
     Champion,
     DraftMode,
     DraftState,
@@ -37,6 +38,7 @@ from draftiq.models import (
 from draftiq.providers.base import StatsProvider
 from draftiq.providers.manual import ManualCSVProvider
 from draftiq.providers.opgg import OpggProvider
+from draftiq.search.ban import suggest_bans
 from draftiq.search.greedy import suggest as greedy_suggest
 from draftiq.search.lookahead import suggest_with_lookahead
 
@@ -176,20 +178,24 @@ def pick(
 
 @app.command()
 def suggest(
-    role: Annotated[Role, typer.Option("--role", help="Role to suggest for.")],
+    role: Annotated[
+        Role | None,
+        typer.Option("--role", help="Role to suggest for. Required for picks; ignored for bans."),
+    ] = None,
     top: Annotated[int, typer.Option("--top", "-n", help="How many candidates to show.")] = 5,
     lookahead: Annotated[
         bool,
         typer.Option(
             "--lookahead",
             help=(
-                "2-ply: also penalize candidates that would hand the opponent a "
-                "strong reply. Slower -- runs several extra scoring passes."
+                "Picks only, 2-ply: also penalize candidates that would hand the "
+                "opponent a strong reply. Slower -- runs several extra scoring passes."
             ),
         ),
     ] = False,
 ) -> None:
-    """Rank legal champions for the current turn's role."""
+    """Rank legal champions for the current turn: picks by win-rate value, bans by
+    how much they deny the opponent."""
     sm = _load_state_machine()
     provider = _get_provider(sm.state.provider)
     if sm.is_complete():
@@ -197,11 +203,19 @@ def suggest(
         raise typer.Exit(1)
     side = sm.current_side()
     action = sm.current_action_type()
-    console.print(f"Suggesting for {side.value}'s {action.value} ({role.value}):")
-    if lookahead:
-        recs = suggest_with_lookahead(sm, provider, role, top_n=top)
+
+    if action is ActionType.BAN:
+        console.print(f"Suggesting bans for {side.value}:")
+        recs = suggest_bans(sm, provider, top_n=top)
     else:
-        recs = greedy_suggest(sm, provider, role, top_n=top)
+        if role is None:
+            console.print("[red]--role is required when suggesting a pick.[/red]")
+            raise typer.Exit(1)
+        console.print(f"Suggesting for {side.value}'s {action.value} ({role.value}):")
+        if lookahead:
+            recs = suggest_with_lookahead(sm, provider, role, top_n=top)
+        else:
+            recs = greedy_suggest(sm, provider, role, top_n=top)
     _render_recommendations(recs)
 
 

@@ -17,9 +17,10 @@ behind `draftiq new --provider {manual,opgg}`, `RankBracket` redesigned to match
 OP.GG's real tier vocabulary, composition fit (`stats/composition.py` +
 `data/composition_features.toml`), counterpick exposure (`stats/exposure.py`) -- all
 5 score terms from the spec are now implemented in `score_candidate` -- 2-ply
-lookahead (`search/lookahead.py`, opt-in via `draftiq suggest --lookahead`), and
-TOURNAMENT draft mode (`draft/rules.py`, `draftiq new --mode tournament`). Still to
-do: ban-specific recommendations, build display in the CLI.
+lookahead (`search/lookahead.py`, opt-in via `draftiq suggest --lookahead`),
+TOURNAMENT draft mode (`draft/rules.py`, `draftiq new --mode tournament`), and
+ban-specific recommendations (`search/ban.py`, automatic when `draftiq suggest` is
+run during a ban step). Still to do: build display in the CLI.
 
 Phase 3 (not started): TUI/web UI, LLM-generated tips, per-player champion pool
 weighting.
@@ -141,13 +142,14 @@ should fail first.
   between `draftiq ban ...` and `draftiq pick ...` calls. `draftiq new` overwrites it
   unconditionally.
 
-- **`suggest` always requires `--role`,** even during the ban phase. Roles are
-  assigned before champion select (per the spec), so during picks this is just "which
-  role am I drafting for." During bans there are no picks on the board yet in SOLOQ,
-  so matchup/synergy deltas are moot (though composition fit and exposure still
-  compute against the full remaining pool, since neither depends on picks existing
-  yet) -- the ban-phase ranking is a reasonable proxy for "worth denying," but not
-  true ban-specific reasoning (that's a separate `ban_suggest`, still Phase 2 work).
+- **`suggest` dispatches on the current action type, not a flag.** `--role` is
+  required for picks (roles are assigned before champion select, per the spec, so
+  it's just "which role am I drafting for") but optional and unused for bans, since
+  bans aren't role-locked. Picks go through `search/greedy.py` (or
+  `search/lookahead.py` with `--lookahead`); bans go through `search/ban.py`, which
+  asks a genuinely different question -- see `search/ban.py`'s docstring for how it
+  reuses `score_candidate` with the sides swapped to get "how good would this be
+  for the opponent" without a second scoring formula.
 
 - **Beta credible intervals are computed without scipy.** The Beta distribution's
   quantile function is implemented from scratch in `stats/shrinkage.py`: the
@@ -194,12 +196,10 @@ should fail first.
   this needed no state-machine changes -- only `draft/rules.py:TOURNAMENT_ORDER`
   (ban1: 6, B/R alternating; pick1: 6, B/R/R/B/B/R; ban2: 4, R/B alternating --
   starts with red since red picked last in pick1; pick2: 4, R/B/B/R -- starts with
-  red since blue banned last in ban2). One consequence: `suggest`'s ban-phase
-  behavior (documented above as "no picks on the board yet, so matchup/synergy
-  terms are moot") is no longer literally true during tournament's ban phase 2 --
-  6 champions are already picked by then, so those terms *do* activate even though
-  the action being scored is a ban, not a pick. Still within the existing "ban-phase
-  suggest is an approximation" caveat, not a new bug.
+  red since blue banned last in ban2). `search/ban.py` handles this correctly by
+  construction: it always uses whatever's actually picked on both sides (which is
+  nothing during SOLOQ's single ban phase, and 6 champions by tournament's ban
+  phase 2) as the matchup/synergy inputs, no phase-specific branching needed.
 
 - **Cache key includes the patch string** (`providers/cache.py`), so a patch bump is
   a natural cache miss rather than needing an explicit invalidation pass.

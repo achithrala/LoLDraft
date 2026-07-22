@@ -13,10 +13,12 @@ for the full spec and phase plan.
 
 ```sh
 uv run draftiq new                          # start a SOLOQ draft (offline synthetic data)
+uv run draftiq new --mode tournament        # ...or the standard competitive draft order
 uv run draftiq new --provider opgg          # ...or backed by live OP.GG win-rate data
 uv run draftiq ban Yasuo                    # ban/pick follow whoever's turn it is
 uv run draftiq pick Aatrox --role top
-uv run draftiq suggest --role top           # ranked recommendations, with explanations
+uv run draftiq suggest                      # bans: ranked by how much denying them hurts the opponent
+uv run draftiq suggest --role top           # picks: ranked recommendations, with explanations
 uv run draftiq suggest --role top --lookahead  # ...also weighing the opponent's likely reply
 uv run draftiq state                        # show the full draft so far
 ```
@@ -46,9 +48,11 @@ Draft state is saved to `.draftiq/state.json` in the current directory between r
   - `ban CHAMPION` / `pick CHAMPION --role ROLE [--side SIDE]` -- resolves the
     champion name (exact/fuzzy match against the provider's registry, or a
     "did you mean" hint), applies it via `DraftStateMachine`, saves state.
-  - `suggest --role ROLE [--top N] [--lookahead]` -- calls `search/greedy.suggest`
-    (or `search/lookahead.suggest_with_lookahead` with `--lookahead`) and renders a
-    `rich` table (score, 90% credible interval, sample size, term breakdown).
+  - `suggest [--role ROLE] [--top N] [--lookahead]` -- dispatches on the current
+    action: picks (`--role` required) go through `search/greedy.suggest` (or
+    `search/lookahead.suggest_with_lookahead` with `--lookahead`); bans (`--role`
+    unused) go through `search/ban.suggest_bans`. Renders a `rich` table (score,
+    90% credible interval, sample size, term breakdown) either way.
   - `state` -- prints mode/rank/provider, all bans, both sides' picks, and whose
     turn is next.
   - Private helpers: `_get_provider` (picks `ManualCSVProvider`/`OpggProvider` from
@@ -165,13 +169,19 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
   (SOLOQ has no pre-assigned role per pick slot, so there's no single deterministic
   "their next pick"), penalizing candidates that would hand them a strong follow-up.
   Opt-in (`draftiq suggest --lookahead`) since it's several extra scoring passes.
+- `ban.py` -- `suggest_bans(sm, provider, top_n)`: a genuinely different question
+  from picking -- not "what's good for me" but "how much does denying this hurt the
+  opponent." Reuses `score_candidate` with the sides swapped (their picks as allies,
+  ours as the matchup threat) to get "how good would this be for them" for free,
+  checked across each of their still-unfilled roles (bans aren't role-locked) and
+  weighted by pick rate. Automatic whenever `draftiq suggest` runs during a ban.
 
 **`tests/`** -- one file per module above (`test_shrinkage.py`, `test_draft_state.py`,
 `test_scoring.py`, `test_composition.py`, `test_exposure.py`, `test_lookahead.py`,
-`test_opgg_format.py`, `test_opgg_provider.py`), plus `test_e2e_cli.py` (a full
-offline draft driven entirely through the CLI, no network access). The OP.GG tests
-use `httpx.MockTransport` with real captured server responses -- no live network
-calls in the test suite.
+`test_ban.py`, `test_opgg_format.py`, `test_opgg_provider.py`), plus
+`test_e2e_cli.py` (full offline SOLOQ and TOURNAMENT drafts driven entirely through
+the CLI, no network access). The OP.GG tests use `httpx.MockTransport` with real
+captured server responses -- no live network calls in the test suite.
 
 **`data/`**
 
