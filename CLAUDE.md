@@ -26,6 +26,26 @@ during a ban step); build display (`draftiq build CHAMPION --role ROLE
 Phase 3 (not started): TUI/web UI, LLM-generated tips, per-player champion pool
 weighting.
 
+**Post-Phase 2 addition: champion-priority / flex-pick suggestions.** Not in the
+original spec. `search/priority.py` (`suggest_priority`, wired into the CLI as
+`draftiq suggest --any-role`) answers a different question from every other search/
+module: not "who's best for the role I've already chosen" (`greedy.suggest`) but
+"which champion should I grab right now, whichever role it ends up filling." It
+scores each legal champion against every one of the current side's unfilled roles
+(same cross-role trick as `search/ban.py`, but for your own roles instead of the
+opponent's), then adds two small additive tiebreakers: a flex bonus for champions who
+score well in more than one role (drafting them keeps the opponent guessing and keeps
+your own options open), and a contest-risk bonus using the same
+`1 - (1-pick_rate)**remaining_enemy_picks` shape as counterpick exposure and
+`search/ban.py`'s pick-rate weighting (grab popular champions before the opponent
+denies them). See `search/priority.py`'s module docstring for the full reasoning,
+including a documented bug-and-fix: a naive version let a champion's *unplayed* roles
+(games=0, which shrinks all the way to that role's population baseline) count as
+"flex viable" just because the baseline happened to be close to their real score --
+confirmed live against the manual dataset, where every single champion was getting
+flagged as a 4-5 role flex pick before the fix. Both best-role selection and the flex
+bonus now require `n_games > 0` in a role before it can count at all.
+
 ## OP.GG schema notes (read before touching `providers/opgg.py`)
 
 Everything below was confirmed live against `https://mcp-api.op.gg/mcp` during Phase

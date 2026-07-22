@@ -88,6 +88,7 @@ def score_candidate(
     return Recommendation(
         champion_id=champion.champion_id,
         champion_name=champion.name,
+        role=role,
         total_score=total,
         p_hat=base.p_hat,
         ci_low=base.ci_low,

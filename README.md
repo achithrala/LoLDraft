@@ -21,6 +21,7 @@ uv run draftiq build Aatrox --role top      # items, runes, skill order, summone
 uv run draftiq suggest                      # bans: ranked by how much denying them hurts the opponent
 uv run draftiq suggest --role top           # picks: ranked recommendations, with explanations
 uv run draftiq suggest --role top --lookahead  # ...also weighing the opponent's likely reply
+uv run draftiq suggest --any-role           # picks: ranked across all your unfilled roles at once
 uv run draftiq state                        # show the full draft so far
 ```
 
@@ -37,8 +38,9 @@ Draft state is saved to `.draftiq/state.json` in the current directory between r
     pre-computed rates) plus `.win_rate`/`.pick_rate`/`.ban_rate` convenience
     properties that divide them out.
   - `Build` -- items, runes, skill order, summoner spells for a champion/role.
-  - `Recommendation` / `TermContribution` -- a scored candidate plus its
-    term-by-term breakdown (`base_rate`, `vs <enemy>`, `with <ally>`, ...).
+  - `Recommendation` / `TermContribution` -- a scored candidate (including which
+    `role` it was scored for) plus its term-by-term breakdown (`base_rate`,
+    `vs <enemy>`, `with <ally>`, ...).
   - `DraftState` / `DraftAction` -- the persisted draft: mode, rank, provider, and
     the ordered list of bans/picks so far.
   - Enums: `Role`, `RankBracket` (OP.GG's real tier vocabulary), `Side`,
@@ -53,11 +55,15 @@ Draft state is saved to `.draftiq/state.json` in the current directory between r
     (and opponent, if given), calls the provider's `get_build`, and prints items,
     runes, skill order, and summoners. A thin renderer -- both providers already
     implement `get_build`.
-  - `suggest [--role ROLE] [--top N] [--lookahead]` -- dispatches on the current
-    action: picks (`--role` required) go through `search/greedy.suggest` (or
-    `search/lookahead.suggest_with_lookahead` with `--lookahead`); bans (`--role`
-    unused) go through `search/ban.suggest_bans`. Renders a `rich` table (score,
-    90% credible interval, sample size, term breakdown) either way.
+  - `suggest [--role ROLE] [--top N] [--lookahead] [--any-role]` -- dispatches on
+    the current action: picks (`--role` required, unless `--any-role`) go through
+    `search/greedy.suggest` (or `search/lookahead.suggest_with_lookahead` with
+    `--lookahead`, or `search/priority.suggest_priority` with `--any-role`, which
+    ranks champions across every unfilled role for your side instead of one and
+    can't be combined with `--lookahead`); bans (`--role`/`--any-role` unused) go
+    through `search/ban.suggest_bans`. Renders a `rich` table (score, 90% credible
+    interval, sample size, term breakdown -- plus a Role column for `--any-role`)
+    either way.
   - `state` -- prints mode/rank/provider, all bans, both sides' picks, and whose
     turn is next.
   - Private helpers: `_get_provider` (picks `ManualCSVProvider`/`OpggProvider` from
@@ -180,6 +186,18 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
   ours as the matchup threat) to get "how good would this be for them" for free,
   checked across each of their still-unfilled roles (bans aren't role-locked) and
   weighted by pick rate. Automatic whenever `draftiq suggest` runs during a ban.
+- `priority.py` -- `suggest_priority(sm, provider, top_n)`: a third question, not in
+  the original spec -- "which champion should I grab right now, whichever role it
+  fills," for flex/contested picks rather than a role you've already committed to.
+  Scores every legal champion against each of *your* still-unfilled roles (like
+  `ban.py`, but for your own roles) and keeps the best; adds a small flex-value bonus
+  when more than one role scores close to the best (only counting roles the champion
+  actually has games in -- a role with zero recorded games shrinks to that role's
+  population baseline, which is "no evidence," not "proven competence," and must not
+  count), and a contest-risk bonus (same `1 - (1-pick_rate)**remaining_enemy_picks`
+  shape as counterpick exposure) for champions likely to get taken if you wait.
+  Opt-in via `draftiq suggest --any-role`; picks only, and not combinable with
+  `--lookahead` yet.
 
 **`tests/`** -- one file per module above (`test_shrinkage.py`, `test_draft_state.py`,
 `test_scoring.py`, `test_composition.py`, `test_exposure.py`, `test_lookahead.py`,

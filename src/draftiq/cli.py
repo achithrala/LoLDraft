@@ -42,6 +42,7 @@ from draftiq.providers.opgg import OpggProvider
 from draftiq.search.ban import suggest_bans
 from draftiq.search.greedy import suggest as greedy_suggest
 from draftiq.search.lookahead import suggest_with_lookahead
+from draftiq.search.priority import suggest_priority
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
@@ -91,27 +92,33 @@ def _resolve_champion(name: str, champions: list[Champion]) -> Champion:
     raise typer.Exit(1)
 
 
-def _render_recommendations(recs: list[Recommendation]) -> None:
+def _render_recommendations(recs: list[Recommendation], show_role: bool = False) -> None:
     if not recs:
         console.print("[yellow]No legal candidates remain.[/yellow]")
         return
     table = Table(title="Recommendations")
     table.add_column("#", justify="right")
     table.add_column("Champion")
+    if show_role:
+        table.add_column("Role")
     table.add_column("Score", justify="right")
     table.add_column("90% CI", justify="right")
     table.add_column("n games", justify="right")
     table.add_column("Breakdown")
     for i, rec in enumerate(recs, start=1):
         breakdown = ", ".join(f"{t.label}: {t.value:+.4f}" for t in rec.terms)
-        table.add_row(
-            str(i),
-            rec.champion_name,
-            f"{rec.total_score:.4f}",
-            f"[{rec.ci_low:.3f}, {rec.ci_high:.3f}]",
-            str(rec.n_games),
-            breakdown,
+        row = [str(i), rec.champion_name]
+        if show_role:
+            row.append(rec.role.value)
+        row.extend(
+            [
+                f"{rec.total_score:.4f}",
+                f"[{rec.ci_low:.3f}, {rec.ci_high:.3f}]",
+                str(rec.n_games),
+                breakdown,
+            ]
         )
+        table.add_row(*row)
     console.print(table)
 
 
@@ -238,6 +245,17 @@ def suggest(
             ),
         ),
     ] = False,
+    any_role: Annotated[
+        bool,
+        typer.Option(
+            "--any-role",
+            help=(
+                "Picks only: ignore --role and rank champions across all of your "
+                "unfilled roles, factoring in flex value and contest risk. Use this "
+                "to decide who to grab, not what to put them at."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Rank legal champions for the current turn: picks by win-rate value, bans by
     how much they deny the opponent."""
@@ -250,8 +268,23 @@ def suggest(
     action = sm.current_action_type()
 
     if action is ActionType.BAN:
+        if any_role:
+            console.print("[red]--any-role only applies to picks; bans aren't role-locked.[/red]")
+            raise typer.Exit(1)
         console.print(f"Suggesting bans for {side.value}:")
         recs = suggest_bans(sm, provider, top_n=top)
+        _render_recommendations(recs)
+    elif any_role:
+        if lookahead:
+            console.print("[red]--any-role and --lookahead can't be combined yet.[/red]")
+            raise typer.Exit(1)
+        console.print(f"Suggesting priority picks for {side.value} (any role):")
+        try:
+            recs = suggest_priority(sm, provider, top_n=top)
+        except ValueError as e:
+            console.print(f"[yellow]{e}[/yellow]")
+            raise typer.Exit(1) from e
+        _render_recommendations(recs, show_role=True)
     else:
         if role is None:
             console.print("[red]--role is required when suggesting a pick.[/red]")
@@ -261,7 +294,7 @@ def suggest(
             recs = suggest_with_lookahead(sm, provider, role, top_n=top)
         else:
             recs = greedy_suggest(sm, provider, role, top_n=top)
-    _render_recommendations(recs)
+        _render_recommendations(recs)
 
 
 @app.command(name="state")

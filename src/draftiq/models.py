@@ -160,6 +160,7 @@ class TermContribution(BaseModel):
 class Recommendation(BaseModel):
     champion_id: int
     champion_name: str
+    role: Role
     total_score: float
     p_hat: float
     ci_low: float

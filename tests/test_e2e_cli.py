@@ -174,3 +174,28 @@ def test_build_accepts_optional_opponent() -> None:
     _run("new")
     output = _run("build", "Aatrox", "--role", "top", "--opponent", "Darius")
     assert "Aatrox build" in output
+
+
+def test_suggest_any_role_shows_role_column_during_pick_phase() -> None:
+    _run("new")
+    for champ in BANS:
+        _run("ban", champ)
+    output = _run("suggest", "--any-role")
+    assert "priority picks" in output
+    assert "Role" in output
+
+
+def test_suggest_any_role_rejected_during_ban_phase() -> None:
+    _run("new")
+    result = runner.invoke(app, ["suggest", "--any-role"])
+    assert result.exit_code != 0
+    assert "only applies to picks" in result.output
+
+
+def test_suggest_any_role_and_lookahead_rejected_together() -> None:
+    _run("new")
+    for champ in BANS:
+        _run("ban", champ)
+    result = runner.invoke(app, ["suggest", "--any-role", "--lookahead"])
+    assert result.exit_code != 0
+    assert "can't be combined" in result.output
