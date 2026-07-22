@@ -16,10 +16,10 @@ its own compact-response parser (`providers/opgg_format.py`), wired into the CLI
 behind `draftiq new --provider {manual,opgg}`, `RankBracket` redesigned to match
 OP.GG's real tier vocabulary, composition fit (`stats/composition.py` +
 `data/composition_features.toml`), counterpick exposure (`stats/exposure.py`) -- all
-5 score terms from the spec are now implemented in `score_candidate` -- and 2-ply
-lookahead (`search/lookahead.py`, opt-in via `draftiq suggest --lookahead`). Still
-to do: TOURNAMENT draft mode, ban-specific recommendations, build display in the
-CLI.
+5 score terms from the spec are now implemented in `score_candidate` -- 2-ply
+lookahead (`search/lookahead.py`, opt-in via `draftiq suggest --lookahead`), and
+TOURNAMENT draft mode (`draft/rules.py`, `draftiq new --mode tournament`). Still to
+do: ban-specific recommendations, build display in the CLI.
 
 Phase 3 (not started): TUI/web UI, LLM-generated tips, per-player champion pool
 weighting.
@@ -187,6 +187,19 @@ should fail first.
   they'll actually pick. It's `lookahead_width` nested `greedy.suggest()` calls, so
   it's deliberately opt-in (`--lookahead`) rather than the CLI's default path --
   real added latency, especially against a network-bound provider like OP.GG.
+
+- **TOURNAMENT's ban phase 2 happens after pick phase 1**, unlike SOLOQ where all
+  bans come first. `DraftStateMachine` is already fully generic over the order
+  table (it just asks "what's the next step," never assumes bans precede picks), so
+  this needed no state-machine changes -- only `draft/rules.py:TOURNAMENT_ORDER`
+  (ban1: 6, B/R alternating; pick1: 6, B/R/R/B/B/R; ban2: 4, R/B alternating --
+  starts with red since red picked last in pick1; pick2: 4, R/B/B/R -- starts with
+  red since blue banned last in ban2). One consequence: `suggest`'s ban-phase
+  behavior (documented above as "no picks on the board yet, so matchup/synergy
+  terms are moot") is no longer literally true during tournament's ban phase 2 --
+  6 champions are already picked by then, so those terms *do* activate even though
+  the action being scored is a ban, not a pick. Still within the existing "ban-phase
+  suggest is an approximation" caveat, not a new bug.
 
 - **Cache key includes the patch string** (`providers/cache.py`), so a patch bump is
   a natural cache miss rather than needing an explicit invalidation pass.

@@ -123,9 +123,6 @@ def new(
     ] = ProviderName.MANUAL,
 ) -> None:
     """Start a new draft, discarding any previous one."""
-    if mode is not DraftMode.SOLOQ:
-        console.print(f"[red]{mode.value} is not supported yet (Phase 2).[/red] Use --mode soloq.")
-        raise typer.Exit(1)
     sm = DraftStateMachine.new(mode, rank, provider)
     _save_state_machine(sm)
     console.print(

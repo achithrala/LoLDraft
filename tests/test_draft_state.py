@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from draftiq.draft.rules import SOLOQ_ORDER, order_for
+from draftiq.draft.rules import SOLOQ_ORDER, TOURNAMENT_ORDER, order_for
 from draftiq.draft.state import (
     ChampionUnavailableError,
     DraftCompleteError,
@@ -52,9 +52,57 @@ class TestSoloqOrder:
         ]
         assert all(action is ActionType.PICK for _, action in picks)
 
-    def test_tournament_order_not_implemented_yet(self) -> None:
-        with pytest.raises(NotImplementedError):
-            order_for(DraftMode.TOURNAMENT)
+    def test_order_for_soloq(self) -> None:
+        assert order_for(DraftMode.SOLOQ) == SOLOQ_ORDER
+
+
+class TestTournamentOrder:
+    def test_has_twenty_steps(self) -> None:
+        assert len(TOURNAMENT_ORDER) == 20
+
+    def test_order_for_tournament(self) -> None:
+        assert order_for(DraftMode.TOURNAMENT) == TOURNAMENT_ORDER
+
+    def test_ban_phase_one_is_six_alternating_starting_blue(self) -> None:
+        ban_phase_1 = TOURNAMENT_ORDER[:6]
+        assert all(action is ActionType.BAN for _, action in ban_phase_1)
+        assert [side for side, _ in ban_phase_1] == [
+            Side.BLUE,
+            Side.RED,
+            Side.BLUE,
+            Side.RED,
+            Side.BLUE,
+            Side.RED,
+        ]
+
+    def test_pick_phase_one_is_six_b_r_r_b_b_r(self) -> None:
+        pick_phase_1 = TOURNAMENT_ORDER[6:12]
+        assert all(action is ActionType.PICK for _, action in pick_phase_1)
+        assert [side for side, _ in pick_phase_1] == [
+            Side.BLUE,
+            Side.RED,
+            Side.RED,
+            Side.BLUE,
+            Side.BLUE,
+            Side.RED,
+        ]
+
+    def test_ban_phase_two_is_four_alternating_starting_red(self) -> None:
+        ban_phase_2 = TOURNAMENT_ORDER[12:16]
+        assert all(action is ActionType.BAN for _, action in ban_phase_2)
+        assert [side for side, _ in ban_phase_2] == [Side.RED, Side.BLUE, Side.RED, Side.BLUE]
+
+    def test_pick_phase_two_is_four_r_b_b_r(self) -> None:
+        pick_phase_2 = TOURNAMENT_ORDER[16:]
+        assert all(action is ActionType.PICK for _, action in pick_phase_2)
+        assert [side for side, _ in pick_phase_2] == [Side.RED, Side.BLUE, Side.BLUE, Side.RED]
+
+    def test_five_bans_and_five_picks_per_side(self) -> None:
+        for side in (Side.BLUE, Side.RED):
+            bans = sum(1 for s, a in TOURNAMENT_ORDER if s is side and a is ActionType.BAN)
+            picks = sum(1 for s, a in TOURNAMENT_ORDER if s is side and a is ActionType.PICK)
+            assert bans == 5
+            assert picks == 5
 
 
 class TestDraftStateMachine:
@@ -143,6 +191,30 @@ class TestDraftStateMachine:
             sm.apply_pick(champion_id=champ_id, role=role)
             champ_id += 1
         assert sm.is_complete()
+        assert len(sm.picked_champion_ids(Side.BLUE)) == 5
+        assert len(sm.picked_champion_ids(Side.RED)) == 5
+        with pytest.raises(DraftCompleteError):
+            sm.current_side()
+
+    def test_full_tournament_draft_completes_after_twenty_actions(self) -> None:
+        # Unlike SOLOQ, tournament bans and picks interleave (ban phase 2 comes
+        # after pick phase 1), so this drives the state machine generically off
+        # current_action_type() instead of "ban ten times, then pick."
+        sm = DraftStateMachine.new(DraftMode.TOURNAMENT)
+        champ_id = 1
+        roles = [Role.TOP, Role.JUNGLE, Role.MID, Role.BOTTOM, Role.SUPPORT]
+        role_cursor = {Side.BLUE: 0, Side.RED: 0}
+        while not sm.is_complete():
+            side = sm.current_side()
+            if sm.current_action_type() is ActionType.BAN:
+                sm.apply_ban(champion_id=champ_id)
+            else:
+                role = roles[role_cursor[side]]
+                role_cursor[side] += 1
+                sm.apply_pick(champion_id=champ_id, role=role)
+            champ_id += 1
+        assert sm.is_complete()
+        assert len(sm.banned_champion_ids()) == 10
         assert len(sm.picked_champion_ids(Side.BLUE)) == 5
         assert len(sm.picked_champion_ids(Side.RED)) == 5
         with pytest.raises(DraftCompleteError):

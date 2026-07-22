@@ -1,7 +1,6 @@
-"""End-to-end test: drives the CLI through a complete SOLOQ draft against
-ManualCSVProvider only. No network access is possible here -- the CLI hard-codes
-ManualCSVProvider in Phase 1, and that provider never imports httpx or touches the
-network.
+"""End-to-end tests: drive the CLI through complete SOLOQ and TOURNAMENT drafts
+against ManualCSVProvider (the CLI's default). No network access is possible here --
+ManualCSVProvider never imports httpx or touches the network.
 """
 
 from __future__ import annotations
@@ -77,6 +76,43 @@ def test_full_soloq_draft_completes_offline() -> None:
     # No more actions should be legal once the draft is complete.
     result = runner.invoke(app, ["ban", "Aatrox"])
     assert result.exit_code != 0
+
+
+def test_full_tournament_draft_completes_offline() -> None:
+    _run("new", "--mode", "tournament")
+
+    # Ban phase 1 (6, B/R/B/R/B/R).
+    for champ in ["Malphite", "Jax", "Renekton", "Sejuani", "Kindred", "Xin Zhao"]:
+        _run("ban", champ)
+
+    # Pick phase 1 (6, B/R/R/B/B/R).
+    for champ, role in [
+        ("Aatrox", "top"),
+        ("Darius", "top"),
+        ("Vi", "jungle"),
+        ("Lee Sin", "jungle"),
+        ("Ahri", "mid"),
+        ("Zed", "mid"),
+    ]:
+        _run("pick", champ, "--role", role)
+
+    # Ban phase 2 (4, R/B/R/B).
+    for champ in ["Orianna", "Yasuo", "Miss Fortune", "Nautilus"]:
+        _run("ban", champ)
+
+    # Pick phase 2 (4, R/B/B/R).
+    for champ, role in [
+        ("Caitlyn", "bottom"),
+        ("Jinx", "bottom"),
+        ("Thresh", "support"),
+        ("Lulu", "support"),
+    ]:
+        _run("pick", champ, "--role", role)
+
+    state_output = _run("state")
+    assert "Draft complete." in state_output
+    assert "Aatrox" in state_output
+    assert "Lulu" in state_output
 
 
 def test_rejects_duplicate_ban() -> None:

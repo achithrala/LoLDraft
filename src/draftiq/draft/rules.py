@@ -36,11 +36,37 @@ SOLOQ_ORDER: tuple[tuple[Side, ActionType], ...] = (
     (RED, PICK),
 )
 
+# Standard competitive draft: ban phase 1 (6, alternating B/R), pick phase 1 (6,
+# B/R/R/B/B/R), ban phase 2 (4, alternating -- but starting with whichever side
+# picked *last* in phase 1, i.e. red), pick phase 2 (4, starting with whichever side
+# banned *last* in phase 2, i.e. red again since ban phase 2 ends on blue).
+TOURNAMENT_ORDER: tuple[tuple[Side, ActionType], ...] = (
+    (BLUE, BAN),
+    (RED, BAN),
+    (BLUE, BAN),
+    (RED, BAN),
+    (BLUE, BAN),
+    (RED, BAN),
+    (BLUE, PICK),
+    (RED, PICK),
+    (RED, PICK),
+    (BLUE, PICK),
+    (BLUE, PICK),
+    (RED, PICK),
+    (RED, BAN),
+    (BLUE, BAN),
+    (RED, BAN),
+    (BLUE, BAN),
+    (RED, PICK),
+    (BLUE, PICK),
+    (BLUE, PICK),
+    (RED, PICK),
+)
+
 
 def order_for(mode: DraftMode) -> tuple[tuple[Side, ActionType], ...]:
     if mode is DraftMode.SOLOQ:
         return SOLOQ_ORDER
-    raise NotImplementedError(
-        f"{mode.value} draft order is not implemented yet (Phase 2). "
-        "Only SOLOQ is supported in Phase 1."
-    )
+    if mode is DraftMode.TOURNAMENT:
+        return TOURNAMENT_ORDER
+    raise NotImplementedError(f"{mode.value} draft order is not implemented.")

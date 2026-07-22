@@ -4,10 +4,10 @@ A League of Legends champion-select assistant. You tell it what's been picked an
 banned so far; it returns ranked pick/ban recommendations with a confidence-aware
 win-rate estimate and a term-by-term explanation of why each champion is recommended.
 
-SOLOQ drafts only so far (TOURNAMENT mode is still Phase 2 work). Two data sources:
-a bundled synthetic dataset (`data/manual/`, fully offline) and live OP.GG win-rate
-data. See `CLAUDE.md` for architecture notes and `lol-draft-tool-prompt.md` for the
-full spec and phase plan.
+Supports both SOLOQ and standard competitive TOURNAMENT draft order. Two data
+sources: a bundled synthetic dataset (`data/manual/`, fully offline) and live OP.GG
+win-rate data. See `CLAUDE.md` for architecture notes and `lol-draft-tool-prompt.md`
+for the full spec and phase plan.
 
 ## Usage
 
@@ -133,8 +133,11 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
 
 **`src/draftiq/draft/`**
 
-- `rules.py` -- `SOLOQ_ORDER`, the 20-step (10 ban + 10 pick) turn order table, and
-  `order_for(mode)` (raises `NotImplementedError` for `TOURNAMENT`, not built yet).
+- `rules.py` -- the two 20-step turn order tables and `order_for(mode)`:
+  `SOLOQ_ORDER` (10 bans, then picks B1/R1R2/B2B3/R3R4/B4B5/R5) and
+  `TOURNAMENT_ORDER` (the standard competitive order: ban1 x6, pick1 x6, ban2 x4,
+  pick2 x4 -- ban2 interleaves *after* pick1, unlike SOLOQ where all bans come
+  first).
 - `state.py` -- `DraftStateMachine`, wrapping a `DraftState` and validating every
   mutation:
   - `new(mode, rank, provider)` -- classmethod, starts a fresh draft.
