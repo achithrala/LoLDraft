@@ -68,8 +68,15 @@ binds `127.0.0.1` by default) and single-draft, matching the CLI's own trust mod
     through `search/ban.suggest_bans`. Renders a `rich` table (score, 90% credible
     interval, sample size, term breakdown -- plus a Role column for `--any-role`)
     either way.
-  - `state` -- prints mode/rank/provider, all bans, both sides' picks, and whose
-    turn is next.
+  - `state` -- prints mode/rank/provider, all bans, both sides' picks (in the order
+    they were actually picked), and whose turn is next. Once the draft is complete,
+    also prints a "Final teams" section (`_render_final_teams`, shared with
+    `_print_next_turn` so it appears immediately after the pick that finishes the
+    draft too) -- both sides' picks re-sorted into canonical role order
+    (top/jungle/mid/bottom/support, not pick order, since role is chosen freely at
+    `pick` time) with each entry annotated `(pick N)`, its 1-indexed position in the
+    overall draft-wide pick sequence -- the one piece of information the role
+    re-sort would otherwise lose.
   - `serve [--host] [--port]` -- launches the local web UI (`web/app.py`) via
     `uvicorn`, binding `127.0.0.1` by default. Reads/writes the exact same
     `.draftiq/state.json`, so a browser tab and the CLI can drive the same live
@@ -259,7 +266,12 @@ CLI never needed, provider memoization).
   Lookahead/Any-role toggles that mirror `dispatch.py`'s mutual-exclusion rules
   client-side, and a build panel. Every mutating action re-fetches
   `GET /api/draft/state` and re-renders from scratch -- the server is always the
-  source of truth, no separate client-side draft logic.
+  source of truth, no separate client-side draft logic. The board always shows each
+  side's 5 picks sorted into canonical role order rather than pick order (unlike
+  the CLI's separate running `state` log, this is the board's only view), each
+  annotated `(pick N)` with its overall draft-wide pick number -- the same
+  role-sort-loses-pick-order tradeoff `cli._render_final_teams` handles, computed
+  client-side from the same `state.actions` order the server returns.
 
 **`tests/`** -- one file per module above (`test_shrinkage.py`, `test_draft_state.py`,
 `test_scoring.py`, `test_composition.py`, `test_exposure.py`, `test_lookahead.py`,

@@ -96,17 +96,23 @@ function renderBoard() {
   }
   bansEl.appendChild(bansList);
 
+  // Pick order (1-indexed, across both sides) is lost once picks are grouped by
+  // role instead of the order they happened in -- look it up by identity so the
+  // role-sorted view can still show it.
+  const allPicks = state.actions.filter((a) => a.action_type === "pick");
+  const pickNumber = new Map(allPicks.map((a, i) => [a, i + 1]));
+
   for (const [side, container] of [["blue", blueEl], ["red", redEl]]) {
     const picksByRole = Object.fromEntries(
-      state.actions
-        .filter((a) => a.action_type === "pick" && a.side === side)
-        .map((a) => [a.role, a])
+      allPicks.filter((a) => a.side === side).map((a) => [a.role, a])
     );
     const ul = document.createElement("ul");
     for (const role of ROLES) {
       const li = document.createElement("li");
       const pick = picksByRole[role];
-      li.textContent = `${role}: ${pick ? pick.champion_name : "-"}`;
+      li.textContent = pick
+        ? `${role}: ${pick.champion_name} (pick ${pickNumber.get(pick)})`
+        : `${role}: -`;
       const isNextSlot =
         !state.is_complete &&
         state.next_action === "pick" &&

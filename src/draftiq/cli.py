@@ -21,6 +21,7 @@ stays independent of the web dependencies.
 from __future__ import annotations
 
 import difflib
+from collections.abc import Callable
 from typing import Annotated
 
 import typer
@@ -168,7 +169,7 @@ def ban(champion: Annotated[str, typer.Argument(help="Champion name to ban.")]) 
         raise typer.Exit(1) from e
     _save_state_machine(sm)
     console.print(f"{side.value} banned [bold]{champ.name}[/bold].")
-    _print_next_turn(sm)
+    _print_next_turn(sm, provider)
 
 
 @app.command()
@@ -192,7 +193,7 @@ def pick(
         raise typer.Exit(1) from e
     _save_state_machine(sm)
     console.print(f"{acting_side.value} picked [bold]{champ.name}[/bold] ({role.value}).")
-    _print_next_turn(sm)
+    _print_next_turn(sm, provider)
 
 
 @app.command()
@@ -281,16 +282,45 @@ def suggest(
     _render_recommendations(recs, show_role=show_role)
 
 
-@app.command(name="state")
-def show_state() -> None:
-    """Print the current draft state: bans, picks, and whose turn is next."""
-    sm = _load_state_machine()
-    provider = _get_provider(sm.state.provider)
+def _name_lookup(provider: StatsProvider) -> Callable[[int], str]:
     champion_by_id = {c.champion_id: c for c in provider.get_champions()}
 
     def name_of(champion_id: int) -> str:
         champ = champion_by_id.get(champion_id)
         return champ.name if champ is not None else f"#{champion_id}"
+
+    return name_of
+
+
+def _render_final_teams(sm: DraftStateMachine, name_of: Callable[[int], str]) -> None:
+    """Both sides' picks, sorted by canonical role order (top/jungle/mid/bottom/
+    support) rather than the order they were actually picked in -- pick order need
+    not match role order, since role is chosen freely at `pick` time (see
+    `draft/state.py`), so a running pick-order log isn't the right shape for "here
+    are the two final teams." Each entry also shows its overall pick number (1-10,
+    across both sides) so the role-sorted view doesn't lose that information."""
+    picks = [a for a in sm.state.actions if a.action_type.value == "pick"]
+    pick_number = {(a.side, a.champion_id): i + 1 for i, a in enumerate(picks)}
+
+    console.print("\n[bold]Final teams:[/bold]")
+    for side in (Side.BLUE, Side.RED):
+        console.print(f"\n{side.value.capitalize()} team:")
+        picks_by_role = {a.role: a for a in picks if a.side is side}
+        for role in Role:
+            pick = picks_by_role.get(role)
+            if pick is None:
+                console.print(f"  {role.value}: -")
+            else:
+                n = pick_number[(pick.side, pick.champion_id)]
+                console.print(f"  {role.value}: {name_of(pick.champion_id)} (pick {n})")
+
+
+@app.command(name="state")
+def show_state() -> None:
+    """Print the current draft state: bans, picks, and whose turn is next."""
+    sm = _load_state_machine()
+    provider = _get_provider(sm.state.provider)
+    name_of = _name_lookup(provider)
 
     console.print(
         f"Mode: [bold]{sm.state.mode.value}[/bold]  Rank: {sm.state.rank.value}  "
@@ -313,14 +343,16 @@ def show_state() -> None:
 
     if sm.is_complete():
         console.print("\n[bold]Draft complete.[/bold]")
+        _render_final_teams(sm, name_of)
     else:
         next_side, next_action = sm.current_side().value, sm.current_action_type().value
         console.print(f"\nNext: [bold]{next_side} {next_action}[/bold]")
 
 
-def _print_next_turn(sm: DraftStateMachine) -> None:
+def _print_next_turn(sm: DraftStateMachine, provider: StatsProvider) -> None:
     if sm.is_complete():
         console.print("[bold]Draft complete.[/bold]")
+        _render_final_teams(sm, _name_lookup(provider))
     else:
         next_side, next_action = sm.current_side().value, sm.current_action_type().value
         console.print(f"Next: [bold]{next_side} {next_action}[/bold]")
