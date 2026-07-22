@@ -4,18 +4,21 @@ A League of Legends champion-select assistant. You tell it what's been picked an
 banned so far; it returns ranked pick/ban recommendations with a confidence-aware
 win-rate estimate and a term-by-term explanation of why each champion is recommended.
 
-Phase 1 (current): SOLOQ drafts only, scored from a bundled synthetic dataset
-(`data/manual/`) so the whole thing runs fully offline. See `CLAUDE.md` for
-architecture notes and `lol-draft-tool-prompt.md` for the full spec and phase plan.
+SOLOQ drafts only so far (TOURNAMENT mode is still Phase 2 work). Two data sources:
+a bundled synthetic dataset (`data/manual/`, fully offline) and live OP.GG win-rate
+data. See `CLAUDE.md` for architecture notes and `lol-draft-tool-prompt.md` for the
+full spec and phase plan.
 
 ## Usage
 
 ```sh
-uv run draftiq new                      # start a SOLOQ draft
-uv run draftiq ban Yasuo                # ban/pick follow whoever's turn it is
+uv run draftiq new                          # start a SOLOQ draft (offline synthetic data)
+uv run draftiq new --provider opgg          # ...or backed by live OP.GG win-rate data
+uv run draftiq ban Yasuo                    # ban/pick follow whoever's turn it is
 uv run draftiq pick Aatrox --role top
-uv run draftiq suggest --role top       # ranked recommendations, with explanations
-uv run draftiq state                    # show the full draft so far
+uv run draftiq suggest --role top           # ranked recommendations, with explanations
+uv run draftiq suggest --role top --lookahead  # ...also weighing the opponent's likely reply
+uv run draftiq state                        # show the full draft so far
 ```
 
 Draft state is saved to `.draftiq/state.json` in the current directory between runs.
@@ -43,7 +46,8 @@ Draft state is saved to `.draftiq/state.json` in the current directory between r
   - `ban CHAMPION` / `pick CHAMPION --role ROLE [--side SIDE]` -- resolves the
     champion name (exact/fuzzy match against the provider's registry, or a
     "did you mean" hint), applies it via `DraftStateMachine`, saves state.
-  - `suggest --role ROLE [--top N]` -- calls `search/greedy.suggest` and renders a
+  - `suggest --role ROLE [--top N] [--lookahead]` -- calls `search/greedy.suggest`
+    (or `search/lookahead.suggest_with_lookahead` with `--lookahead`) and renders a
     `rich` table (score, 90% credible interval, sample size, term breakdown).
   - `state` -- prints mode/rank/provider, all bans, both sides' picks, and whose
     turn is next.
@@ -150,14 +154,21 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
 - `greedy.py` -- `suggest(sm, provider, role, top_n)`: gathers the legal candidate
   pool and each side's picks from the state machine, calls the provider's optional
   `prefetch_for_suggest` if it has one, scores every legal champion via
-  `score_candidate`, and returns the top N by total score.
+  `score_candidate`, and returns the top N by total score. 1-ply: doesn't consider
+  what the opponent might pick next.
+- `lookahead.py` -- `suggest_with_lookahead(...)`: 2-ply. Runs `greedy.suggest` for
+  a wider candidate pool, then for each candidate simulates picking it and checks
+  the opponent's best available reply across each of their still-unfilled roles
+  (SOLOQ has no pre-assigned role per pick slot, so there's no single deterministic
+  "their next pick"), penalizing candidates that would hand them a strong follow-up.
+  Opt-in (`draftiq suggest --lookahead`) since it's several extra scoring passes.
 
 **`tests/`** -- one file per module above (`test_shrinkage.py`, `test_draft_state.py`,
-`test_scoring.py`, `test_composition.py`, `test_exposure.py`, `test_opgg_format.py`,
-`test_opgg_provider.py`), plus `test_e2e_cli.py` (a full offline draft driven
-entirely through the CLI, no network access). The OP.GG tests use
-`httpx.MockTransport` with real captured server responses -- no live network calls
-in the test suite.
+`test_scoring.py`, `test_composition.py`, `test_exposure.py`, `test_lookahead.py`,
+`test_opgg_format.py`, `test_opgg_provider.py`), plus `test_e2e_cli.py` (a full
+offline draft driven entirely through the CLI, no network access). The OP.GG tests
+use `httpx.MockTransport` with real captured server responses -- no live network
+calls in the test suite.
 
 **`data/`**
 

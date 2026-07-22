@@ -16,9 +16,10 @@ its own compact-response parser (`providers/opgg_format.py`), wired into the CLI
 behind `draftiq new --provider {manual,opgg}`, `RankBracket` redesigned to match
 OP.GG's real tier vocabulary, composition fit (`stats/composition.py` +
 `data/composition_features.toml`), counterpick exposure (`stats/exposure.py`) -- all
-5 score terms from the spec are now implemented in `score_candidate`. Still to do:
-2-ply lookahead, TOURNAMENT draft mode, ban-specific recommendations, build display
-in the CLI.
+5 score terms from the spec are now implemented in `score_candidate` -- and 2-ply
+lookahead (`search/lookahead.py`, opt-in via `draftiq suggest --lookahead`). Still
+to do: TOURNAMENT draft mode, ban-specific recommendations, build display in the
+CLI.
 
 Phase 3 (not started): TUI/web UI, LLM-generated tips, per-player champion pool
 weighting.
@@ -176,6 +177,16 @@ should fail first.
   it. This is what makes pick order matter: the exact same candidate is scored as
   more exposed with 5 enemy picks left than with 1, and exactly 0 exposure with 0
   enemy picks left (there is a dedicated test for this in `tests/test_exposure.py`).
+
+- **2-ply lookahead has to guess which role the opponent's next pick targets.**
+  SOLOQ doesn't pre-assign roles to pick slots (role is only known at `draftiq pick
+  --role` time), so `search/lookahead.py` can't simulate a single deterministic
+  "opponent's next pick." Ply 2 instead checks the opponent's best response across
+  *each* of their still-unfilled roles and uses the strongest one -- a proxy for
+  "what would a rational opponent value most right now," not a prediction of what
+  they'll actually pick. It's `lookahead_width` nested `greedy.suggest()` calls, so
+  it's deliberately opt-in (`--lookahead`) rather than the CLI's default path --
+  real added latency, especially against a network-bound provider like OP.GG.
 
 - **Cache key includes the patch string** (`providers/cache.py`), so a patch bump is
   a natural cache miss rather than needing an explicit invalidation pass.

@@ -38,6 +38,7 @@ from draftiq.providers.base import StatsProvider
 from draftiq.providers.manual import ManualCSVProvider
 from draftiq.providers.opgg import OpggProvider
 from draftiq.search.greedy import suggest as greedy_suggest
+from draftiq.search.lookahead import suggest_with_lookahead
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
@@ -180,6 +181,16 @@ def pick(
 def suggest(
     role: Annotated[Role, typer.Option("--role", help="Role to suggest for.")],
     top: Annotated[int, typer.Option("--top", "-n", help="How many candidates to show.")] = 5,
+    lookahead: Annotated[
+        bool,
+        typer.Option(
+            "--lookahead",
+            help=(
+                "2-ply: also penalize candidates that would hand the opponent a "
+                "strong reply. Slower -- runs several extra scoring passes."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Rank legal champions for the current turn's role."""
     sm = _load_state_machine()
@@ -190,7 +201,10 @@ def suggest(
     side = sm.current_side()
     action = sm.current_action_type()
     console.print(f"Suggesting for {side.value}'s {action.value} ({role.value}):")
-    recs = greedy_suggest(sm, provider, role, top_n=top)
+    if lookahead:
+        recs = suggest_with_lookahead(sm, provider, role, top_n=top)
+    else:
+        recs = greedy_suggest(sm, provider, role, top_n=top)
     _render_recommendations(recs)
 
 
