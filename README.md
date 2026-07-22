@@ -105,9 +105,27 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
   - `regularized_incomplete_beta` / `beta_ppf` -- the Beta distribution's CDF and
     inverse-CDF, implemented from scratch (continued-fraction method + bisection) so
     the project never needs scipy.
-- `scoring.py` -- `score_candidate(...)`: combines a champion's shrunk base rate with
-  a shrunk delta for every enemy matchup and ally synergy, returning a
-  `Recommendation` whose `.terms` list shows exactly where the total score came from.
+- `scoring.py` -- `score_candidate(...)`: combines all 5 score terms from the spec --
+  shrunk base rate, a shrunk delta per enemy matchup, a shrunk delta per ally
+  synergy, composition fit, and counterpick exposure -- into one `Recommendation`
+  whose `.terms` list shows exactly where the total score came from.
+- `composition.py` -- team composition as a soft tiebreaker:
+  - `CompositionFeatures` -- a champion's damage-type split, engage/disengage/poke/
+    waveclear/frontline flags, and early/mid/late scaling window.
+  - `load_hand_curated_features()` -- loads (and caches) the hand-curated table from
+    `data/composition_features.toml`.
+  - `features_from_tags(tags)` -- crude fallback for any champion not in that table,
+    derived from Data Dragon tags.
+  - `get_champion_features(champion, hand_curated)` -- hand-curated entry if one
+    exists, else the tag-based fallback.
+  - `comp_fit(candidate, ally_features)` -- penalizes a team (soft targets only, per
+    spec: small relative to the win-rate terms) for damage skew, no frontline, no
+    engage, or no waveclear.
+- `exposure.py` -- `compute_exposure(...)`: the counterpick-exposure term. Finds the
+  single worst remaining counter for a candidate among the still-unpicked pool and
+  weights it by the probability the enemy actually lands it across their remaining
+  picks -- this is what makes pick order matter (the same candidate is riskier to
+  pick with 5 enemy picks left than with 1, and risk-free with 0 left).
 
 **`src/draftiq/draft/`**
 
@@ -135,15 +153,19 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
   `score_candidate`, and returns the top N by total score.
 
 **`tests/`** -- one file per module above (`test_shrinkage.py`, `test_draft_state.py`,
-`test_scoring.py`, `test_opgg_format.py`, `test_opgg_provider.py`), plus
-`test_e2e_cli.py` (a full offline draft driven entirely through the CLI, no network
-access). The OP.GG tests use `httpx.MockTransport` with real captured server
-responses -- no live network calls in the test suite.
+`test_scoring.py`, `test_composition.py`, `test_exposure.py`, `test_opgg_format.py`,
+`test_opgg_provider.py`), plus `test_e2e_cli.py` (a full offline draft driven
+entirely through the CLI, no network access). The OP.GG tests use
+`httpx.MockTransport` with real captured server responses -- no live network calls
+in the test suite.
 
-**`data/manual/`** -- the synthetic dataset `ManualCSVProvider` reads:
-`champions.csv`, `champion_stats.csv`, `matchups.csv`, `synergies.csv`,
-`builds.csv`. All fabricated, never mistakable for real data (`get_patch()` returns
-`"SYNTH-1"`).
+**`data/`**
+
+- `composition_features.toml` -- hand-curated `CompositionFeatures` for all 20
+  champions in the manual dataset, keyed by `champion_id`.
+- `manual/` -- the synthetic dataset `ManualCSVProvider` reads: `champions.csv`,
+  `champion_stats.csv`, `matchups.csv`, `synergies.csv`, `builds.csv`. All
+  fabricated, never mistakable for real data (`get_patch()` returns `"SYNTH-1"`).
 
 ## Development
 

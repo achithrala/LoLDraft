@@ -1,0 +1,237 @@
+# Hand-curated composition feature vectors, keyed by champion_id (matches Data
+# Dragon / OP.GG's shared numeric champion key -- see CLAUDE.md).
+#
+# These are subjective judgment calls about each champion's kit -- NOT derived from
+# any provider -- checked in and versioned like code, same as the spec asks for.
+# `stats/composition.py` falls back to a crude Data-Dragon-tag heuristic for any
+# champion not listed here (most of OP.GG's ~170-champion roster). Being listed here
+# is strictly more accurate than that fallback, so extend this table over guessing.
+#
+# Fields:
+#   ad_share / ap_share / true_share  -- damage type split, should sum to ~1.0
+#   engage      -- has a hard initiation/pick tool
+#   disengage   -- has a peel/escape/anti-engage tool
+#   poke        -- strong long-range harass without committing
+#   waveclear   -- clears minion waves quickly
+#   frontline   -- can reasonably absorb damage/tank for the team
+#   scaling     -- primary power-spike window: "early" | "mid" | "late"
+
+[1] # Aatrox
+ad_share = 1.0
+ap_share = 0.0
+true_share = 0.0
+engage = true
+disengage = false
+poke = false
+waveclear = true
+frontline = true
+scaling = "mid"
+
+[2] # Darius
+ad_share = 1.0
+ap_share = 0.0
+true_share = 0.0
+engage = true
+disengage = false
+poke = false
+waveclear = true
+frontline = true
+scaling = "early"
+
+[3] # Malphite
+ad_share = 0.2
+ap_share = 0.8
+true_share = 0.0
+engage = true
+disengage = false
+poke = false
+waveclear = false
+frontline = true
+scaling = "mid"
+
+[4] # Jax
+ad_share = 0.85
+ap_share = 0.15
+true_share = 0.0
+engage = false
+disengage = true
+poke = false
+waveclear = true
+frontline = true
+scaling = "late"
+
+[5] # Lee Sin
+ad_share = 1.0
+ap_share = 0.0
+true_share = 0.0
+engage = true
+disengage = false
+poke = false
+waveclear = false
+frontline = false
+scaling = "early"
+
+[6] # Vi
+ad_share = 1.0
+ap_share = 0.0
+true_share = 0.0
+engage = true
+disengage = false
+poke = false
+waveclear = false
+frontline = true
+scaling = "mid"
+
+[7] # Sejuani
+ad_share = 0.3
+ap_share = 0.7
+true_share = 0.0
+engage = true
+disengage = false
+poke = false
+waveclear = false
+frontline = true
+scaling = "mid"
+
+[8] # Kindred
+ad_share = 1.0
+ap_share = 0.0
+true_share = 0.0
+engage = false
+disengage = false
+poke = true
+waveclear = true
+frontline = false
+scaling = "late"
+
+[9] # Ahri
+ad_share = 0.0
+ap_share = 1.0
+true_share = 0.0
+engage = true
+disengage = true
+poke = true
+waveclear = true
+frontline = false
+scaling = "mid"
+
+[10] # Zed
+ad_share = 1.0
+ap_share = 0.0
+true_share = 0.0
+engage = false
+disengage = false
+poke = false
+waveclear = true
+frontline = false
+scaling = "mid"
+
+[11] # Orianna
+ad_share = 0.0
+ap_share = 1.0
+true_share = 0.0
+engage = true
+disengage = true
+poke = true
+waveclear = true
+frontline = false
+scaling = "mid"
+
+[12] # Yasuo
+ad_share = 1.0
+ap_share = 0.0
+true_share = 0.0
+engage = true
+disengage = true
+poke = false
+waveclear = true
+frontline = false
+scaling = "late"
+
+[13] # Jinx
+ad_share = 1.0
+ap_share = 0.0
+true_share = 0.0
+engage = false
+disengage = false
+poke = true
+waveclear = true
+frontline = false
+scaling = "late"
+
+[14] # Caitlyn
+ad_share = 1.0
+ap_share = 0.0
+true_share = 0.0
+engage = false
+disengage = true
+poke = true
+waveclear = true
+frontline = false
+scaling = "mid"
+
+[15] # Miss Fortune
+ad_share = 0.9
+ap_share = 0.1
+true_share = 0.0
+engage = false
+disengage = false
+poke = true
+waveclear = true
+frontline = false
+scaling = "mid"
+
+[16] # Thresh
+ad_share = 0.3
+ap_share = 0.7
+true_share = 0.0
+engage = true
+disengage = true
+poke = false
+waveclear = false
+frontline = true
+scaling = "mid"
+
+[17] # Lulu
+ad_share = 0.0
+ap_share = 1.0
+true_share = 0.0
+engage = false
+disengage = true
+poke = false
+waveclear = false
+frontline = false
+scaling = "mid"
+
+[18] # Nautilus
+ad_share = 0.2
+ap_share = 0.8
+true_share = 0.0
+engage = true
+disengage = false
+poke = false
+waveclear = false
+frontline = true
+scaling = "mid"
+
+[19] # Renekton
+ad_share = 1.0
+ap_share = 0.0
+true_share = 0.0
+engage = true
+disengage = false
+poke = false
+waveclear = true
+frontline = true
+scaling = "early"
+
+[20] # Xin Zhao
+ad_share = 1.0
+ap_share = 0.0
+true_share = 0.0
+engage = true
+disengage = false
+poke = false
+waveclear = true
+frontline = true
+scaling = "early"

@@ -3,9 +3,11 @@ from __future__ import annotations
 import pytest
 
 from draftiq.draft.state import DraftStateMachine
-from draftiq.models import DraftMode, Recommendation, Role
+from draftiq.models import DraftMode, RankBracket, Recommendation, Role
 from draftiq.providers.manual import ManualCSVProvider
 from draftiq.search.greedy import suggest
+from draftiq.stats.scoring import score_candidate
+from draftiq.stats.shrinkage import compute_role_average
 
 # All ten bans go to ids that don't exist in the fixture's champion registry, so every
 # real champion stays legal for the picks that follow -- these tests only care about
@@ -31,13 +33,36 @@ def provider() -> ManualCSVProvider:
     return ManualCSVProvider()
 
 
-class TestSuggestFreshDraft:
-    def test_ranks_top_lane_by_shrunk_base_rate_only(self, provider: ManualCSVProvider) -> None:
-        sm = DraftStateMachine.new(DraftMode.SOLOQ)
-        _burn_ban_phase(sm)
-        assert sm.current_action_type().value == "pick"  # B1, nothing drafted yet
+class TestScoreCandidateBaseRateOnly:
+    """score_candidate in isolation, with composition/exposure both disabled --
+    the direct successor to what was originally a suggest()-level test, before
+    composition fit and counterpick exposure became always-on parts of suggest().
+    """
 
-        recs = _only(suggest(sm, provider, role=Role.TOP, top_n=20), {1, 2, 3, 4})
+    def test_ranks_top_lane_by_shrunk_base_rate_only(self, provider: ManualCSVProvider) -> None:
+        champions = provider.get_champions()
+        champion_by_id = {c.champion_id: c for c in champions}
+        stats_by_champ = {
+            c.champion_id: provider.get_champion_stats(c.champion_id, Role.TOP, RankBracket.ALL)
+            for c in champions
+        }
+        p0 = compute_role_average(stats_by_champ.values())
+
+        recs = [
+            score_candidate(
+                champion=champion_by_id[champ_id],
+                role=Role.TOP,
+                rank=RankBracket.ALL,
+                provider=provider,
+                p0=p0,
+                ally_ids=set(),
+                enemy_ids=set(),
+                champion_by_id=champion_by_id,
+            )
+            for champ_id in (1, 2, 3, 4)
+        ]
+        recs.sort(key=lambda r: r.total_score, reverse=True)
+
         # Jax has the highest raw win rate (54%) but only 500 games; shrinkage pulls
         # it down toward the ~51.6% role average, yet it should still edge out
         # Malphite (52.4% raw, 25k games) because 500 games isn't *nothing*.
@@ -82,14 +107,64 @@ class TestSuggestWithPicksOnBoard:
     def test_zero_sample_matchup_or_synergy_contributes_nothing(
         self, provider: ManualCSVProvider
     ) -> None:
-        sm = DraftStateMachine.new(DraftMode.SOLOQ)
-        _burn_ban_phase(sm)
-        sm.apply_pick(champion_id=8, role=Role.JUNGLE)  # B1: Kindred (niche, tiny samples)
-        sm.apply_pick(champion_id=1, role=Role.TOP)  # R1: Aatrox
-        sm.apply_pick(champion_id=6, role=Role.JUNGLE)  # R2: Vi
+        # score_candidate directly, composition/exposure disabled: the same
+        # isolation as TestScoreCandidateBaseRateOnly above, but exercising the
+        # matchup/synergy loops with an ally whose synergy data doesn't exist.
+        champions = provider.get_champions()
+        champion_by_id = {c.champion_id: c for c in champions}
+        stats_by_champ = {
+            c.champion_id: provider.get_champion_stats(c.champion_id, Role.TOP, RankBracket.ALL)
+            for c in champions
+        }
+        p0 = compute_role_average(stats_by_champ.values())
 
-        recs = _only(suggest(sm, provider, role=Role.TOP, top_n=20), {4})
+        jax = score_candidate(
+            champion=champion_by_id[4],
+            role=Role.TOP,
+            rank=RankBracket.ALL,
+            provider=provider,
+            p0=p0,
+            ally_ids={8},  # Kindred: no synergy data with Jax in the fixture
+            enemy_ids={1},  # Aatrox: real matchup data exists
+            champion_by_id=champion_by_id,
+        )
         # Jax vs Aatrox has real matchup data; Jax's synergy with Kindred does not
         # exist in the fixture, so only the base_rate + matchup terms should appear.
-        jax_labels = {t.label for t in recs[0].terms}
+        jax_labels = {t.label for t in jax.terms}
         assert jax_labels == {"base_rate", "vs Aatrox"}
+
+
+class TestSuggestCompositionAndExposure:
+    """End-to-end through suggest(): confirms composition fit and counterpick
+    exposure (both wired in as always-on parts of the pipeline) actually surface in
+    real recommendations, not just in their own isolated unit tests."""
+
+    def test_composition_fit_penalizes_a_solo_ap_no_frontline_pick(
+        self, provider: ManualCSVProvider
+    ) -> None:
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        _burn_ban_phase(sm)
+        assert sm.current_side().value == "blue"  # B1, nothing picked yet
+
+        recs = _only(suggest(sm, provider, role=Role.MID, top_n=20), {9})  # Ahri
+        ahri = recs[0]
+        labels = {t.label for t in ahri.terms}
+        # Ahri alone: 100% AP (damage skew) and no frontline champion on the team.
+        assert "damage_skew" in labels
+        assert "no_frontline" in labels
+
+    def test_exposure_term_appears_for_a_real_remaining_counter(
+        self, provider: ManualCSVProvider
+    ) -> None:
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        _burn_ban_phase(sm)
+        assert sm.current_side().value == "blue"  # B1: red has all 5 picks left
+
+        recs = _only(suggest(sm, provider, role=Role.TOP, top_n=20), {3})  # Malphite
+        malphite = recs[0]
+        labels = {t.label for t in malphite.terms}
+        # Darius remains in the pool and crushes Malphite in lane (39% win rate) --
+        # with 5 red picks still to come, that must show up as real exposure.
+        assert "exposure to Darius" in labels
+        exposure_terms = [t.value for t in malphite.terms if t.label == "exposure to Darius"]
+        assert exposure_terms[0] < 0.0

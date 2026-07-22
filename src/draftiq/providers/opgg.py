@@ -408,11 +408,11 @@ class OpggProvider:
         champion_ids: Iterable[int],
         role: Role,
         rank: RankBracket,
-        enemy_ids: Iterable[int] = (),
-        ally_ids: Iterable[int] = (),
+        include_matchups: bool = False,
+        include_synergies: bool = False,
     ) -> None:
-        """Warms the cache for every legal candidate's base-rate stats (and, if the
-        draft has picks on the board, their counters/synergies lists) concurrently.
+        """Warms the cache for many champions' base-rate stats (and, on request,
+        their counters/synergies lists) concurrently.
 
         Not part of the StatsProvider protocol -- `search/greedy.py` duck-types this
         (`hasattr(provider, "prefetch_for_suggest")`) rather than every provider
@@ -422,14 +422,18 @@ class OpggProvider:
         timing an actual cold call against the production server). Concurrency is
         safe: `httpx.Client` and `SQLiteCache` are both thread-safe, and `_McpClient`
         guards its session-init race with a lock.
+
+        `include_matchups` warms `_counters` -- needed both for matchup deltas
+        against already-picked enemies and for counterpick exposure against the
+        whole remaining pool, so callers should pass it unconditionally once any
+        picks remain for either side. `include_synergies` only matters once there
+        are allies to check synergy against.
         """
         ids = list(champion_ids)
-        has_enemies = bool(list(enemy_ids))
-        has_allies = bool(list(ally_ids))
         tasks: list[Any] = [lambda cid=cid: self.get_champion_stats(cid, role, rank) for cid in ids]
-        if has_enemies:
+        if include_matchups:
             tasks += [lambda cid=cid: self._counters(cid, role, rank) for cid in ids]
-        if has_allies:
+        if include_synergies:
             tasks += [lambda cid=cid: self._synergies(cid, rank) for cid in ids]
         with ThreadPoolExecutor(max_workers=16) as pool:
             futures = [pool.submit(task) for task in tasks]

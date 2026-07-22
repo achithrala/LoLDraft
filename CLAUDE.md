@@ -14,7 +14,9 @@ registry only), manual CSV provider, SQLite cache, shrinkage math, greedy scorer
 **Phase 2: in progress.** Done so far: OP.GG MCP provider (`providers/opgg.py`) with
 its own compact-response parser (`providers/opgg_format.py`), wired into the CLI
 behind `draftiq new --provider {manual,opgg}`, `RankBracket` redesigned to match
-OP.GG's real tier vocabulary. Still to do: composition fit, counterpick exposure,
+OP.GG's real tier vocabulary, composition fit (`stats/composition.py` +
+`data/composition_features.toml`), counterpick exposure (`stats/exposure.py`) -- all
+5 score terms from the spec are now implemented in `score_candidate`. Still to do:
 2-ply lookahead, TOURNAMENT draft mode, ban-specific recommendations, build display
 in the CLI.
 
@@ -111,7 +113,7 @@ should fail first.
   to the `StatsProvider` protocol -- providers with negligible per-call cost (manual
   CSV, a dict lookup) have no reason to implement it.
 
-## Architecture decisions and quirks (Phase 1)
+## Architecture decisions and quirks
 
 - **Provider split.** `DataDragonProvider` only implements `get_patch()` and
   `get_champions()` (real HTTP calls to ddragon.leagueoflegends.com). Its
@@ -141,10 +143,10 @@ should fail first.
 - **`suggest` always requires `--role`,** even during the ban phase. Roles are
   assigned before champion select (per the spec), so during picks this is just "which
   role am I drafting for." During bans there are no picks on the board yet in SOLOQ,
-  so matchup/synergy terms are moot and it degenerates to ranking champions in that
-  role by shrunk base rate -- a reasonable proxy for "worth denying," but not real
-  ban-specific reasoning (weighted by what the opponent is likely to pick), which is
-  Phase 2 (`counterpick exposure`, ban recommendations).
+  so matchup/synergy deltas are moot (though composition fit and exposure still
+  compute against the full remaining pool, since neither depends on picks existing
+  yet) -- the ban-phase ranking is a reasonable proxy for "worth denying," but not
+  true ban-specific reasoning (that's a separate `ban_suggest`, still Phase 2 work).
 
 - **Beta credible intervals are computed without scipy.** The Beta distribution's
   quantile function is implemented from scratch in `stats/shrinkage.py`: the
@@ -153,9 +155,27 @@ should fail first.
   the approved dependency list. Validated in `tests/test_shrinkage.py` against the
   closed-form Beta(1,1) = Uniform(0,1) case.
 
-- **`score_candidate` still implements only 3 of the spec's 5 score terms:** base
-  rate, matchup deltas, synergy deltas. Composition fit and counterpick exposure are
-  still Phase 2 work in progress -- see Status above.
+- **`score_candidate` implements all 5 of the spec's score terms**: base rate,
+  matchup deltas, synergy deltas, composition fit, and counterpick exposure.
+
+- **Composition features use TOML, not YAML.** The spec says "checked-in YAML
+  file"; `pyyaml` isn't on the approved dependency list, so `stats/composition.py`
+  reads `data/composition_features.toml` via the standard library's `tomllib`
+  (read-only, Python 3.11+) instead -- same goal (small, human-editable, checked-in,
+  hand-curated), no new dependency. All 20 champions in the manual dataset are
+  hand-curated; anything else (most of OP.GG's ~170-champion roster) falls back to a
+  crude Data-Dragon-tag heuristic, clearly marked as a fallback, not a substitute.
+
+- **Counterpick exposure's exact weighting formula isn't in the spec** -- it says
+  "weighted by how many enemy picks remain and by how likely those counters are to
+  actually be picked (pick rate)" without a formula. `stats/exposure.py` finds the
+  single worst remaining counter (max shrunk-delta loss, same shrinkage as the
+  regular matchup term) and weights it by the probability the enemy lands that
+  specific counter across their remaining picks: `1 - (1 - pick_rate) **
+  remaining_picks`, treating each remaining enemy pick as an independent chance at
+  it. This is what makes pick order matter: the exact same candidate is scored as
+  more exposed with 5 enemy picks left than with 1, and exactly 0 exposure with 0
+  enemy picks left (there is a dedicated test for this in `tests/test_exposure.py`).
 
 - **Cache key includes the patch string** (`providers/cache.py`), so a patch bump is
   a natural cache miss rather than needing an explicit invalidation pass.
@@ -165,7 +185,8 @@ should fail first.
 ## Approved dependencies
 
 `httpx`, `pydantic` (v2), `typer`, `rich`, stdlib `sqlite3`/`threading`/
-`concurrent.futures`, `pytest`, `mypy`, `ruff`. Nothing else without asking first (see
-the spec doc). Notably: no MCP SDK dependency was needed for the OP.GG provider --
-`httpx` alone is enough, since every response observed from the live server is plain
-JSON over HTTP POST (never SSE).
+`concurrent.futures`/`tomllib`, `pytest`, `mypy`, `ruff`. Nothing else without asking
+first (see the spec doc). Notably: no MCP SDK dependency was needed for the OP.GG
+provider -- `httpx` alone is enough, since every response observed from the live
+server is plain JSON over HTTP POST (never SSE). No `pyyaml` either -- see the
+composition-features bullet above.

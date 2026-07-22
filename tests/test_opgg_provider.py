@@ -272,7 +272,7 @@ class TestPrefetchForSuggest:
         provider, counts = self._make_counting_provider()
         champion_ids = [266, 122, 21]
         provider.prefetch_for_suggest(
-            champion_ids, Role.TOP, RankBracket.ALL, enemy_ids=[27], ally_ids=[412]
+            champion_ids, Role.TOP, RankBracket.ALL, include_matchups=True, include_synergies=True
         )
         calls_after_prefetch = counts["tools/call"]
         assert calls_after_prefetch > 0
