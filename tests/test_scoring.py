@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 
 from draftiq.draft.state import DraftStateMachine
-from draftiq.models import DraftMode, RankBracket, Recommendation, Role
+from draftiq.models import (
+    Build,
+    Champion,
+    ChampionStats,
+    DraftMode,
+    Matchup,
+    RankBracket,
+    Recommendation,
+    Role,
+    Synergy,
+)
 from draftiq.providers.manual import ManualCSVProvider
-from draftiq.search.greedy import suggest
+from draftiq.search.greedy import POPULARITY_WEIGHT_SCALE, suggest
 from draftiq.stats.scoring import score_candidate
 from draftiq.stats.shrinkage import compute_role_average
 
@@ -88,11 +100,16 @@ class TestSuggestWithPicksOnBoard:
         recs = _only(suggest(sm, provider, role=Role.TOP, top_n=20), {1, 3, 4})
         ids = [r.champion_id for r in recs]
         # Jax: strong base rate + favorable matchup into Darius, no synergy data
-        #   with Yasuo -> stays on top.
-        # Aatrox: decent base rate, unfavorable matchup into Darius.
+        #   with Yasuo -- but Jax is also a 0.5%-pick_rate outlier (500 games) next
+        #   to Aatrox's 42% (the most-picked top laner in the fixture), and
+        #   greedy.suggest's popularity term is now large enough to close that gap:
+        #   Aatrox's matchup disadvantage isn't enough to offset Aatrox getting the
+        #   full popularity bonus while Jax gets next to none of it.
         # Malphite: big synergy bonus with Yasuo (wombo combo) but crushed by Darius
-        #   in lane -> falls to the bottom despite the synergy term.
-        assert ids == [4, 1, 3]
+        #   in lane -> falls to the bottom despite the synergy term (and despite its
+        #   own real, if smaller, popularity bonus -- 25% pick rate is still far
+        #   short of Aatrox's 42%).
+        assert ids == [1, 4, 3]
 
         by_id = {r.champion_id: r for r in recs}
         jax_terms = {t.label: t.value for t in by_id[4].terms}
@@ -168,3 +185,108 @@ class TestSuggestCompositionAndExposure:
         assert "exposure to Darius" in labels
         exposure_terms = [t.value for t in malphite.terms if t.label == "exposure to Darius"]
         assert exposure_terms[0] < 0.0
+
+
+class TestSuggestPopularityWeighting:
+    """`greedy.suggest` (not `score_candidate` -- popularity is a search-layer
+    tiebreaker, same as `search/ban.py`'s pick-rate weighting, not one of
+    `score_candidate`'s 5 spec terms) adds a small bonus, scaled by `pick_rate`
+    *relative to the most popular legal candidate in this role/rank query* (not a
+    flat `pick_rate`), so legitimately-strong-but-rarely-played picks don't dominate
+    purely on a lucky small-in-practice-but-large-in-absolute-games sample. See
+    greedy.py's module docstring for why this is a distinct signal from shrinkage's
+    `k`, and why the bonus is relative rather than a fixed linear scale."""
+
+    def test_popularity_term_present_and_matches_pick_rate(
+        self, provider: ManualCSVProvider
+    ) -> None:
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        _burn_ban_phase(sm)
+
+        recs = _only(suggest(sm, provider, role=Role.TOP, top_n=20), {1, 4})
+        by_id = {r.champion_id: r for r in recs}
+
+        # Aatrox: pick_count=42000/total_games=100000 -> pick_rate=0.42
+        # (champion_stats.csv) -- the highest of any real top laner in the fixture,
+        # so it gets the full POPULARITY_WEIGHT_SCALE bonus.
+        aatrox_popularity = next(t.value for t in by_id[1].terms if t.label == "popularity")
+        assert aatrox_popularity == pytest.approx(POPULARITY_WEIGHT_SCALE)
+
+        # Jax: pick_count=500/total_games=100000 -> pick_rate=0.005, ~1.2% as
+        # popular as Aatrox.
+        jax_popularity = next(t.value for t in by_id[4].terms if t.label == "popularity")
+        assert jax_popularity == pytest.approx(POPULARITY_WEIGHT_SCALE * (0.005 / 0.42))
+
+        assert aatrox_popularity > jax_popularity
+
+    def test_popularity_breaks_a_tie_between_equal_win_rates(self) -> None:
+        """Isolates the popularity term's effect with a controlled fake provider:
+        two champions with identical wins/games (so identical base_rate, no other
+        terms in play) but different pick rates must rank the more popular one
+        first."""
+
+        @dataclass
+        class _FakeProvider:
+            def get_patch(self) -> str:
+                return "FAKE-1"
+
+            def get_champions(self) -> list[Champion]:
+                return [
+                    Champion(champion_id=901, name="Popular", ddragon_id="Popular"),
+                    Champion(champion_id=902, name="Niche", ddragon_id="Niche"),
+                ]
+
+            def get_champion_stats(
+                self, champion_id: int, role: Role, rank: RankBracket
+            ) -> ChampionStats:
+                pick_count = 40_000 if champion_id == 901 else 400
+                return ChampionStats(
+                    champion_id=champion_id,
+                    role=role,
+                    rank=rank,
+                    patch="FAKE-1",
+                    wins=520,
+                    games=1000,
+                    pick_count=pick_count,
+                    ban_count=0,
+                    total_games=100_000,
+                )
+
+            def get_matchup(
+                self, champion_id: int, opponent_id: int, role: Role, rank: RankBracket
+            ) -> Matchup:
+                return Matchup(
+                    champion_id=champion_id,
+                    opponent_id=opponent_id,
+                    role=role,
+                    rank=rank,
+                    patch="FAKE-1",
+                    wins=0,
+                    games=0,
+                )
+
+            def get_synergy(self, champion_id: int, ally_id: int, rank: RankBracket) -> Synergy:
+                return Synergy(
+                    champion_id=champion_id,
+                    ally_id=ally_id,
+                    rank=rank,
+                    patch="FAKE-1",
+                    wins=0,
+                    games=0,
+                )
+
+            def get_build(
+                self,
+                champion_id: int,
+                role: Role,
+                rank: RankBracket,
+                opponent_id: int | None = None,
+            ) -> Build:
+                raise NotImplementedError
+
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        for i in range(10):
+            sm.apply_ban(champion_id=9000 + i)
+
+        recs = suggest(sm, _FakeProvider(), role=Role.TOP, top_n=20)
+        assert [r.champion_id for r in recs] == [901, 902]

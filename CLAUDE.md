@@ -137,6 +137,60 @@ bonus now require `n_games > 0` in a role before it can count at all.
   module level, so every other CLI command stays fast and independent of the web
   dependencies even if something's wrong with them.
 
+## Post-Phase-3 addition: popularity weighting in `search/greedy.py`
+
+- **Why this exists.** A live `draftiq suggest --provider opgg --role top` call
+  surfaced Warwick and Soraka as the top two suggestions -- unusual top-lane picks,
+  ranked purely on shrunk win rate with no signal for how commonly a champion is
+  actually played there. `score_candidate`'s 5 spec terms have no room for
+  popularity, and it isn't one of them by design (see the spec doc) -- this is a
+  search-layer tiebreaker added on top, the same architectural pattern as
+  `search/ban.py`'s and `search/priority.py`'s own pick-rate weighting, not a
+  change to `score_candidate` itself.
+
+- **This is a genuinely different signal from shrinkage's `k`, not a duplicate of
+  it.** `pick_rate` is a champion's share of a *huge, stable* bracket-wide
+  denominator (OP.GG's `total_games` is often in the millions) -- a champion can be
+  rarely picked yet still have a large, reliable `games` sample for the games it
+  *did* get (confirmed live: Warwick top had 129,874 games, a large sample by any
+  standard, at only a 6% pick rate). Shrinkage only discounts small samples; it has
+  no way to express "this performed well in the games it got, but few players
+  actually choose it."
+
+- **Calibration false start, corrected before shipping.** The first version used a
+  flat `POPULARITY_WEIGHT_SCALE * pick_rate` (scale 0.03, chosen to be safely small
+  against the manual dataset's deliberately extreme pick-rate spread, 0.5% to 42%,
+  used elsewhere to test shrinkage's small-sample behavior). Verified live: real
+  OP.GG pick rates for a single role cluster tightly (4-8% across an entire top lane
+  pool in this test), so the same scale that was safe against the manual dataset's
+  spread produced a bonus of ~0.001-0.002 against live data -- a rounding error,
+  nowhere near enough to compete with even a 1-2 percentage point win-rate gap. A
+  single fixed linear scale cannot be simultaneously small enough for one dataset's
+  spread and large enough for the other's. Fixed by normalizing against the pool's
+  own max: `POPULARITY_WEIGHT_SCALE * (pick_rate / max_pick_rate_among_legal_ids)`
+  -- the single most-picked legal champion in a given role/rank query always gets
+  the full `POPULARITY_WEIGHT_SCALE` (0.02, on the same scale as
+  `stats/composition.py`'s fit penalties), regardless of whether the underlying
+  pick-rate distribution happens to be wide or narrow. Re-verified live after the
+  fix: `popularity` bonus values moved from ~0.001-0.002 to ~0.003-0.012, a real
+  tiebreaker now, without needing a second live data point to recalibrate.
+
+- **Live re-verification also showed the original "problem" was smaller than it
+  first looked.** Once actually checked, Warwick's 52% win rate and Senna's 52%
+  win rate at a 12% pick rate (more popular than Darius or Garen's 8%) turned out to
+  be genuinely strong, reasonably mainstream picks in the current patch's live
+  data -- not statistical noise from an obscure pick. Aatrox/Darius/Garen were
+  hovering at 50-51% in the same query. The popularity term is working as intended
+  either way (it's a tiebreaker among close win rates, not an override), but this is
+  a reminder that "feels off-meta" isn't the same as "is a small-sample fluke" --
+  always check live numbers before assuming which one it is.
+
+- **Only `greedy.suggest` (and therefore `search/lookahead.py`, which wraps it) has
+  this term.** `search/ban.py` and `search/priority.py` keep their own
+  independently-calibrated pick-rate weighting (denial value / contest risk are
+  different questions from "is this a trustworthy suggestion"), and
+  `score_candidate` itself remains untouched -- still exactly the spec's 5 terms.
+
 ## OP.GG schema notes (read before touching `providers/opgg.py`)
 
 Everything below was confirmed live against `https://mcp-api.op.gg/mcp` during Phase

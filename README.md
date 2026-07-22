@@ -202,7 +202,15 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
   pool and each side's picks from the state machine, calls the provider's optional
   `prefetch_for_suggest` if it has one, scores every legal champion via
   `score_candidate`, and returns the top N by total score. 1-ply: doesn't consider
-  what the opponent might pick next.
+  what the opponent might pick next. Also adds a `popularity` tiebreaker term --
+  `POPULARITY_WEIGHT_SCALE * (pick_rate / max_pick_rate_among_legal_ids)`, relative
+  to the most-picked legal candidate in this exact role/rank query rather than a
+  flat `pick_rate` scale, so it behaves consistently whether pick rates are spread
+  wide (the manual dataset) or clustered tight (real OP.GG data) -- added after live
+  suggestions surfaced legitimately-strong-but-rarely-played picks (e.g. a top-lane
+  Warwick with a large sample and a genuinely good win rate) ahead of standard picks
+  with a similar win rate; see the module's docstring for the full reasoning and a
+  documented first-attempt-too-weak calibration finding.
 - `lookahead.py` -- `suggest_with_lookahead(...)`: 2-ply. Runs `greedy.suggest` for
   a wider candidate pool, then for each candidate simulates picking it and checks
   the opponent's best available reply across each of their still-unfilled roles
