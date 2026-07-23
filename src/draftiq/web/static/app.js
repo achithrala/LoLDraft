@@ -13,8 +13,8 @@ const RANKS = [
 let state = null; // DraftStateResponse | null
 let champions = []; // Champion[]
 
-async function apiGet(path) {
-  const res = await fetch(path);
+async function apiGet(path, signal) {
+  const res = await fetch(path, { signal });
   if (!res.ok) throw new Error(await errorDetail(res));
   return res.json();
 }
@@ -211,12 +211,26 @@ function renderSuggestControls() {
   roleSelect.disabled = disablePickOnly || anyRoleToggle.checked;
 }
 
+// A role switch (or any other control change) fires a brand new fetch without
+// waiting for the previous one -- and against a network-bound provider like
+// OP.GG, an older request can easily resolve *after* a newer one. Without
+// ordering, that stale response silently overwrites the table with the wrong
+// role's results (e.g. top-lane suggestions still showing after switching to
+// jungle). `suggestRequestId` tags every call so a response only renders if
+// it's still the most recent one in flight; aborting the previous fetch is a
+// courtesy (frees up the connection for the new request) but isn't what makes
+// this correct -- the id check is.
+let suggestRequestId = 0;
+let suggestAbortController = null;
+
 async function refreshSuggestions() {
   const tbody = document.querySelector("#suggestions-table tbody");
   const thead = document.querySelector("#suggestions-table thead");
-  tbody.innerHTML = "";
-  thead.innerHTML = "";
-  if (!state || state.is_complete) return;
+  if (!state || state.is_complete) {
+    tbody.innerHTML = "";
+    thead.innerHTML = "";
+    return;
+  }
 
   const lookahead = document.getElementById("lookahead-toggle").checked;
   const anyRole = document.getElementById("any-role-toggle").checked;
@@ -228,14 +242,29 @@ async function refreshSuggestions() {
   if (anyRole) params.set("any_role", "true");
   if (pool) params.set("pool", "true");
   if (state.next_action === "pick" && !anyRole) {
-    if (!roleSelect.value) return; // no unfilled role selected yet
+    if (!roleSelect.value) {
+      tbody.innerHTML = "";
+      thead.innerHTML = "";
+      return; // no unfilled role selected yet
+    }
     params.set("role", roleSelect.value);
   }
 
+  if (suggestAbortController) suggestAbortController.abort();
+  const controller = new AbortController();
+  suggestAbortController = controller;
+  const requestId = ++suggestRequestId;
+
+  thead.innerHTML = "";
+  tbody.innerHTML = `<tr><td colspan="7">Loading suggestions${state.provider === "opgg" ? " from OP.GG (can take up to a minute on a fresh role/rank)" : ""}...</td></tr>`;
+
   try {
-    const recs = await apiGet(`${API}/draft/suggest?${params.toString()}`);
+    const recs = await apiGet(`${API}/draft/suggest?${params.toString()}`, controller.signal);
+    if (requestId !== suggestRequestId) return; // a newer request has since superseded this one
     renderSuggestions(recs, anyRole);
   } catch (e) {
+    if (e.name === "AbortError" || requestId !== suggestRequestId) return;
+    tbody.innerHTML = "";
     showError(e.message);
   }
 }
