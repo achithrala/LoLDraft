@@ -49,13 +49,20 @@ CHAMPIONS_TEXT = (
     'Champion(21,"MissFortune","Miss Fortune")]))'
 )
 
+# Real per-role numbers live in data.summary.positions[], NOT data.summary.
+# average_stats (confirmed live: average_stats is a champion-wide aggregate,
+# identical regardless of the requested `position` -- see providers/opgg.py's
+# module docstring point 10). This champion only has a TOP entry, so a JUNGLE/
+# SUPPORT/etc. query must fall through to the zero-games "no data" case.
 CHAMPION_ANALYSIS_TEXT = (
     "class LolGetChampionAnalysis: data\n"
     "class Data: summary\n"
-    "class Summary: average_stats\n"
-    "class AverageStats: play,win_rate,pick_rate,ban_rate\n"
+    "class Summary: positions\n"
+    "class Position: name,stats\n"
+    "class Stats: play,win_rate,pick_rate,ban_rate\n"
     "\n"
-    "LolGetChampionAnalysis(Data(Summary(AverageStats(98383,0.504823,0.0804255,0.0775391))))"
+    'LolGetChampionAnalysis(Data(Summary([Position("TOP",'
+    "Stats(98383,0.504823,0.0804255,0.0775391))])))"
 )
 
 COUNTERS_TEXT = (
@@ -200,6 +207,21 @@ class TestGetChampionStats:
         # total_games/ban_count are derived from pick_rate/ban_rate, not exact.
         assert stats.total_games == round(98383 / 0.0804255)
         assert stats.source == "opgg"
+
+    def test_role_with_no_positions_entry_returns_zero_games(self) -> None:
+        # CHAMPION_ANALYSIS_TEXT only has a "TOP" entry in positions[] -- this is
+        # the regression test for the bug where get_champion_stats used to read
+        # the champion-wide average_stats field instead, which is identical no
+        # matter what role is requested. A role genuinely never played must fall
+        # through to the same zero-games "no data" contract get_matchup/
+        # get_synergy already use, not silently reuse another role's numbers.
+        provider = _make_provider()
+        stats = provider.get_champion_stats(266, Role.SUPPORT, RankBracket.ALL)
+        assert stats.games == 0
+        assert stats.wins == 0
+        assert stats.pick_count == 0
+        assert stats.ban_count == 0
+        assert stats.total_games == 0
 
     def test_api_error_raises_opgg_api_error(self) -> None:
         provider = _make_provider()

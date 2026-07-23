@@ -12,11 +12,12 @@ the full writeup and captured sample strings) rather than guessed:
 1. Every tool requiring `desired_output_fields` (all the stats tools we need) returns
    a bespoke compact text format, not JSON -- see `opgg_format.py`.
 2. Raw win counts exist for matchups (`weak_counters`/`strong_counters`) and
-   synergies, but NOT for a champion's own base rate: `average_stats` only exposes
-   `win_rate` (rounded to ~2 decimals) and `play`. `get_champion_stats` reconstructs
-   `wins = round(win_rate * play)`, which carries up to roughly ±0.25% relative
-   error on high-sample champions. This is a deliberate, documented compromise, not
-   an oversight -- OP.GG simply doesn't expose anything more precise here.
+   synergies, but NOT for a champion's own base rate: `positions[].stats` (see
+   point 10) only exposes `win_rate` (rounded to ~2 decimals) and `play`.
+   `get_champion_stats` reconstructs `wins = round(win_rate * play)`, which
+   carries up to roughly ±0.25% relative error on high-sample champions. This is
+   a deliberate, documented compromise, not an oversight -- OP.GG simply doesn't
+   expose anything more precise here.
 3. `weak_counters`/`strong_counters` are a small curated top-~3-per-side list, not a
    full pairwise matchup matrix. Most candidate-vs-enemy pairs during a real draft
    will legitimately get `games=0` back -- exactly the "no data available" case the
@@ -59,6 +60,25 @@ the full writeup and captured sample strings) rather than guessed:
    spaces become underscores (`"Miss Fortune"` -> `"MISS_FORTUNE"`, `"Kai'Sa"` ->
    `"KAISA"`, `"Dr. Mundo"` -> `"DR_MUNDO"`) -- `"MISSFORTUNE"` (the stats tools'
    tolerant format) is rejected outright by this one.
+10. `lol_get_champion_analysis`'s `position` request parameter does NOT filter
+   `data.summary.average_stats` at all -- that field is a champion-wide aggregate
+   across every role the champion has ever been played in, identical no matter
+   what `position` is requested (confirmed live: Warwick top/jungle/bottom/
+   support all returned the exact same 461,688-game, 52%-win-rate numbers).
+   `get_champion_stats` originally read `average_stats` directly, a real bug
+   caught from a live report: every role's suggestions surfaced the same handful
+   of high-overall-sample champions (Warwick, Mordekaiser, Olaf...) regardless of
+   which role was actually being scored, because "top-lane Warwick" and
+   "support Warwick" were silently being given the identical number. The correct
+   per-role numbers live one level deeper, in `data.summary.positions[]` -- an
+   array of `{name, stats: {play, win_rate, pick_rate, ban_rate, ...}}` entries,
+   one per role the champion has recorded games in (confirmed this one *is* what
+   varies correctly with `position`: `_counters`/`get_build` were independently
+   verified live to already vary correctly by role, so this bug was isolated to
+   `get_champion_stats` alone). `positions[]` only lists roles with recorded
+   games -- no matching entry (e.g. Warwick has no `"SUPPORT"` entry at all) means
+   zero games for that role, the same "no data" contract `get_matchup`/
+   `get_synergy` already use, not an error.
 """
 
 from __future__ import annotations
@@ -285,12 +305,33 @@ class OpggProvider:
                 "position": _ROLE_TO_POSITION[role],
                 "tier": rank.value,
                 "desired_output_fields": [
-                    "data.summary.average_stats.{play,win_rate,pick_rate,ban_rate}"
+                    "data.summary.positions[].{name,stats.play,stats.win_rate,"
+                    "stats.pick_rate,stats.ban_rate}"
                 ],
             },
         )
         parsed = opgg_format.parse(text)
-        stats = parsed["data"]["summary"]["average_stats"]
+        positions = parsed["data"]["summary"]["positions"]
+        target = _ROLE_TO_POSITION[role].upper()
+        entry = next((p for p in positions if p["name"].upper() == target), None)
+        if entry is None:
+            # Not an error: `positions` only lists roles this champion actually has
+            # recorded games in (confirmed live -- e.g. Warwick's list has no
+            # "SUPPORT" entry at all), so no entry means zero games for this role,
+            # same "no data available" contract as get_matchup/get_synergy below.
+            return ChampionStats(
+                champion_id=champion_id,
+                role=role,
+                rank=rank,
+                patch=self.get_patch(),
+                wins=0,
+                games=0,
+                pick_count=0,
+                ban_count=0,
+                total_games=0,
+                source=self._source,
+            )
+        stats = entry["stats"]
         play: int = stats["play"]
         win_rate: float = stats["win_rate"]
         pick_rate: float = stats["pick_rate"]

@@ -360,11 +360,36 @@ should fail first.
   base rate.** `weak_counters`/`strong_counters` (from `lol_get_champion_analysis`)
   and `synergies` (from `lol_get_champion_synergies`) all expose a raw `win` integer
   alongside `play` -- exactly the raw-counts contract `StatsProvider` requires.
-  `summary.average_stats` (what `get_champion_stats` needs) only ever exposes
+  `summary.positions[].stats` (what `get_champion_stats` needs -- see the next
+  bullet for why it's `positions[]` and not `average_stats`) only ever exposes
   `win_rate` (rounded to ~2 decimals when fetched via `desired_output_fields`) and
   `play`. `get_champion_stats` reconstructs `wins = round(win_rate * play)`, with up
   to roughly ±0.25% relative error on high-sample champions. This is a deliberate,
   documented tradeoff (confirmed with the user), not an oversight.
+
+- **A real correctness bug, caught from a live user report: `get_champion_stats`
+  originally read `summary.average_stats`, which is NOT role-specific.** It's a
+  champion-wide aggregate across every position that champion has ever been
+  played in, and the `position` request parameter has zero effect on it --
+  confirmed live: a Warwick query returned the exact same 461,688-game, 52%-win
+  numbers whether `position` was `"top"`, `"jungle"`, `"bottom"`, or `"support"`.
+  Symptom in practice: `draftiq suggest --role bottom`/`--role support` kept
+  surfacing the same high-overall-sample champions (Warwick, Mordekaiser, Olaf)
+  that were legitimately strong *top-lane* suggestions, because every role was
+  silently being scored with that champion's top-lane-dominated aggregate number
+  instead of their real (often zero) games in that role. The correct per-role
+  breakdown lives one level deeper, in `summary.positions[]` -- a list of
+  `{name, stats: {play, win_rate, pick_rate, ban_rate, ...}}` entries, one per
+  role the champion actually has recorded games in, confirmed to genuinely vary
+  by role (unlike `average_stats`). No entry for a requested role (e.g. Warwick
+  has no `"SUPPORT"` entry at all) means zero games there -- the same "no data"
+  contract `get_matchup`/`get_synergy` already use, not an error. `_counters`
+  (matchup data) and `get_build` were independently verified live to already
+  vary correctly by `position`, so this bug was isolated to `get_champion_stats`
+  alone. Verified fixed live, end-to-end through the web `suggest` endpoint:
+  bottom-lane suggestions now surface Veigar/Seraphine/Swain/Miss Fortune instead
+  of Warwick, with Warwick correctly shrunk to the role's population baseline
+  (`n_games=0`) rather than ranking on borrowed top-lane data.
 
 - **Matchup coverage is sparse by design.** `weak_counters`/`strong_counters` is a
   small curated top-~3-per-side list per champion/role, not a full pairwise matchup
