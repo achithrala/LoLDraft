@@ -48,10 +48,22 @@ the full writeup and captured sample strings) rather than guessed:
    `ban_count ~= round(ban_rate * total_games)`. These only feed the Phase 2
    counterpick-exposure weighting (a soft tiebreaker), not the core win-rate score,
    so the compounded estimation error is an acceptable tradeoff.
+9. `lol_get_lane_matchup_guide` (`get_lane_matchup_guide`) is the one tool this
+   provider calls that takes no `desired_output_fields` at all and returns plain
+   JSON directly -- `opgg_format.parse` is not used for it. It also takes no
+   rank/tier parameter (not in its input schema), so results aren't
+   bracket-specific the way every other call here is. Its `my_champion`/
+   `opponent_champion` params need genuine `UPPER_SNAKE_CASE` -- stricter than
+   `_opgg_champion_param`'s "OP.GG's matcher tolerates both" for the stats tools.
+   Confirmed live: apostrophes/periods are stripped entirely (not replaced),
+   spaces become underscores (`"Miss Fortune"` -> `"MISS_FORTUNE"`, `"Kai'Sa"` ->
+   `"KAISA"`, `"Dr. Mundo"` -> `"DR_MUNDO"`) -- `"MISSFORTUNE"` (the stats tools'
+   tolerant format) is rejected outright by this one.
 """
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -59,7 +71,17 @@ from typing import Any
 
 import httpx
 
-from draftiq.models import Build, Champion, ChampionStats, Matchup, RankBracket, Role, Synergy
+from draftiq.models import (
+    Build,
+    Champion,
+    ChampionStats,
+    GameLengthWinRate,
+    LaneMatchupGuide,
+    Matchup,
+    RankBracket,
+    Role,
+    Synergy,
+)
 from draftiq.providers import opgg_format
 from draftiq.providers.cache import SQLiteCache, cached
 
@@ -233,6 +255,16 @@ class OpggProvider:
         for champion in self.get_champions():
             if champion.champion_id == champion_id:
                 return champion.ddragon_id.upper()
+        raise KeyError(f"Unknown champion_id {champion_id!r} (not in OP.GG's champion list)")
+
+    def _lane_guide_champion_param(self, champion_id: int) -> str:
+        """`lol_get_lane_matchup_guide` needs genuine UPPER_SNAKE_CASE derived from
+        the display name, not `_opgg_champion_param`'s tolerant ddragon-id format --
+        see module docstring point 9."""
+        for champion in self.get_champions():
+            if champion.champion_id == champion_id:
+                cleaned = champion.name.replace("'", "").replace(".", "")
+                return cleaned.upper().replace(" ", "_")
         raise KeyError(f"Unknown champion_id {champion_id!r} (not in OP.GG's champion list)")
 
     @cached(ttl_seconds=86400.0)
@@ -430,6 +462,43 @@ class OpggProvider:
         stats = parsed["data"]["summoner"]["most_champions"]["champion_stats"]
         stats.sort(key=lambda s: s["play"], reverse=True)
         return [s["champion_name"] for s in stats[:limit]]
+
+    def get_lane_matchup_guide(
+        self, my_champion_id: int, opponent_id: int, role: Role
+    ) -> LaneMatchupGuide:
+        """Prose tips + qualitative lane-advantage indicators for one
+        champion-vs-champion matchup, via `lol_get_lane_matchup_guide`. Not part of
+        `StatsProvider` -- no equivalent exists in the offline manual dataset,
+        same reasoning as `prefetch_for_suggest`/`get_summoner_champion_pool`. Not
+        `@cached`: an on-demand "show me tips" query, not part of the hot
+        `suggest()` path, matching `get_build`'s precedent (also uncached)."""
+        my_param = self._lane_guide_champion_param(my_champion_id)
+        opponent_param = self._lane_guide_champion_param(opponent_id)
+        text = self._mcp.call_tool(
+            "lol_get_lane_matchup_guide",
+            {
+                "position": _ROLE_TO_POSITION[role],
+                "my_champion": my_param,
+                "opponent_champion": opponent_param,
+            },
+        )
+        # No desired_output_fields for this tool -- plain JSON, not opgg_format's
+        # compact grammar (see module docstring point 9).
+        payload = json.loads(text)
+        data = payload["data"]
+        return LaneMatchupGuide(
+            my_champion=payload["my_champion"],
+            opponent_champion=payload["opponent_champion"],
+            role=role,
+            tip=data["opponent_champion_tip"],
+            lane_advantage=data["lane_advantage_champion"],
+            lane_solo_kill_advantage=data["lane_solo_kill_advantage_champion"],
+            recommended_play_style=data["recommended_play_style"],
+            win_rate_by_game_length=[
+                GameLengthWinRate(game_length=g["game_length"], win_rate=g["rate"])
+                for g in data["game_lengths"]
+            ],
+        )
 
     def prefetch_for_suggest(
         self,

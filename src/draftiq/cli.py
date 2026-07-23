@@ -1,4 +1,5 @@
-"""The `draftiq` CLI: `new`, `ban`, `pick`, `build`, `suggest`, `state`, `serve`.
+"""The `draftiq` CLI: `new`, `ban`, `pick`, `build`, `tips`, `suggest`, `state`,
+`serve`, `pool`, `roster`.
 
 Draft state is persisted between invocations as JSON at `.draftiq/state.json` in the
 current directory -- each command is a separate process, so there is nowhere else for
@@ -16,6 +17,9 @@ caveats (reconstructed win counts, sparse matchup coverage, position="all" syner
 `serve` launches a local-only web UI (see web/app.py) on top of the same state file --
 `fastapi`/`uvicorn` are imported lazily inside that command so every other command
 stays independent of the web dependencies.
+
+`tips` (like `pool import-opgg`) always talks to live OP.GG data directly, regardless
+of the active draft's provider -- no equivalent exists in the offline manual dataset.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from draftiq.models import (
     Champion,
     ChampionPool,
     DraftMode,
+    LaneMatchupGuide,
     ProviderName,
     RankBracket,
     Recommendation,
@@ -138,6 +143,21 @@ def _render_build(champion_name: str, build: Build) -> None:
         console.print(f"  Skill order: {' > '.join(build.skill_order)}")
 
 
+def _render_tips(champion_name: str, opponent_name: str, guide: LaneMatchupGuide) -> None:
+    console.print(
+        f"\n[bold]{champion_name}[/bold] vs [bold]{opponent_name}[/bold] ({guide.role.value}):"
+    )
+    console.print(f"  Lane advantage: {guide.lane_advantage}")
+    console.print(f"  Solo-kill advantage: {guide.lane_solo_kill_advantage}")
+    console.print(f"  Recommended play style: {guide.recommended_play_style}")
+    console.print(f"  Tip: {guide.tip}")
+    if guide.win_rate_by_game_length:
+        curve = ", ".join(
+            f"{g.game_length}: {g.win_rate:.1%}" for g in guide.win_rate_by_game_length
+        )
+        console.print(f"  Win rate by game length: {curve}")
+
+
 @app.command()
 def new(
     mode: Annotated[DraftMode, typer.Option("--mode", help="Draft format.")] = DraftMode.SOLOQ,
@@ -223,6 +243,32 @@ def build(
         console.print(f"[red]No build data available for {champ.name} ({role.value}):[/red] {e}")
         raise typer.Exit(1) from e
     _render_build(champ.name, result)
+
+
+@app.command()
+def tips(
+    champion: Annotated[str, typer.Argument(help="Your champion.")],
+    role: Annotated[Role, typer.Option("--role", help="Lane/role for this matchup.")],
+    opponent: Annotated[str, typer.Option("--opponent", help="Opponent champion.")],
+) -> None:
+    """Show OP.GG's lane matchup tips for CHAMPION vs --opponent in --role: a
+    prose tip on playing against the opponent, which champion has the lane/
+    solo-kill advantage, and win rate by game length. Always uses live OP.GG
+    data -- no equivalent exists in the offline synthetic dataset, so this
+    doesn't require an active draft and ignores the active draft's provider if
+    one is set."""
+    provider = OpggProvider()
+    champions = provider.get_champions()
+    champ = _resolve_champion(champion, champions)
+    opp = _resolve_champion(opponent, champions)
+    try:
+        guide = provider.get_lane_matchup_guide(champ.champion_id, opp.champion_id, role)
+    except OpggApiError as e:
+        console.print(
+            f"[red]Could not fetch matchup tips for {champ.name} vs {opp.name}:[/red] {e}"
+        )
+        raise typer.Exit(1) from e
+    _render_tips(champ.name, opp.name, guide)
 
 
 @app.command()

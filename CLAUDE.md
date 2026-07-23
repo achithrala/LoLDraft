@@ -23,12 +23,15 @@ ban-specific recommendations (`search/ban.py`, automatic when `draftiq suggest` 
 during a ban step); build display (`draftiq build CHAMPION --role ROLE
 [--opponent CHAMPION]`).
 
-**Phase 3: in progress.** Local web UI complete (`web/app.py` + `web/static/`, launched
-via `draftiq serve`). Champion pool weighting complete, but expanded well beyond the
-spec's "the user's own pool" -- named pools for any player (teammates, enemy players
-in a Clash draft), team-membership rosters, and OP.GG-summoner import (`draftiq pool`/
+**Phase 3: complete.** Local web UI (`web/app.py` + `web/static/`, launched via
+`draftiq serve`). Champion pool weighting, expanded well beyond the spec's "the
+user's own pool" -- named pools for any player (teammates, enemy players in a Clash
+draft), team-membership rosters, and OP.GG-summoner import (`draftiq pool`/
 `draftiq roster`, `draftiq suggest --pool`; see "Phase 3: champion pool weighting"
-below for the full design). LLM-generated tips not started.
+below for the full design). Matchup tips (`draftiq tips CHAMPION --role ROLE
+--opponent CHAMPION`) -- also descoped from the spec's literal "LLM-generated tips":
+confirmed with the user that surfacing OP.GG's own prose tips directly (no LLM call,
+no new dependency) satisfies the need; see "Phase 3: matchup tips" below.
 
 **Post-Phase 2 addition: champion-priority / flex-pick suggestions.** Not in the
 original spec. `search/priority.py` (`suggest_priority`, wired into the CLI as
@@ -289,6 +292,53 @@ commands, `models.ChampionPool`/`TeamRoster`/`consolidated_pool_ids`, or any
   `persistence.get_active_or_default_provider()`, the same bootstrap-to-Manual
   fallback the CLI's `pool` commands use.
 
+## Phase 3: matchup tips (read before touching `draftiq tips`,
+`OpggProvider.get_lane_matchup_guide`, or `models.LaneMatchupGuide`)
+
+- **Descoped from the spec's literal "LLM-generated tips," confirmed with the
+  user.** `lol_get_lane_matchup_guide` already returns real prose tips and
+  qualitative indicators directly from OP.GG -- no LLM call needed to get text,
+  and the user confirmed surfacing that prose as-is satisfies the need. No new
+  dependency, no API key, no per-call cost.
+
+- **This is the one tool `OpggProvider` calls that returns plain JSON directly,
+  confirmed live.** Every other tool this provider needs requires
+  `desired_output_fields` and returns OP.GG's bespoke compact text format (see
+  the OP.GG schema notes below); `lol_get_lane_matchup_guide` takes no such
+  parameter at all and its response is real, parseable JSON -- `get_lane_matchup_
+  guide` uses `json.loads` directly, not `opgg_format.parse`. It also takes no
+  rank/tier parameter (not in its input schema), so results aren't
+  bracket-specific the way every other stats call in this provider is.
+
+- **Champion names for this tool need genuine `UPPER_SNAKE_CASE`, confirmed
+  live -- a stricter format than every other tool in this provider.**
+  `_opgg_champion_param` (`Champion.ddragon_id.upper()`) is deliberately *not*
+  reused here: passing `"MISSFORTUNE"` (which the stats tools tolerate fine) is
+  rejected outright by `lol_get_lane_matchup_guide` with "Invalid position or
+  champion specified." A dedicated `_lane_guide_champion_param` derives the
+  parameter from `Champion.name` instead: strip apostrophes and periods
+  entirely (not replace with underscore), replace spaces with underscores, then
+  uppercase. Confirmed live: `"Miss Fortune"` -> `"MISS_FORTUNE"`, `"Kai'Sa"` ->
+  `"KAISA"` (not `"KAI_SA"`, which fails), `"Dr. Mundo"` -> `"DR_MUNDO"`,
+  `"Vel'Koz"` -> `"VELKOZ"`.
+
+- **Only one tip field exists (`opponent_champion_tip`), not a symmetric pair.**
+  It's specifically about playing *against* the opponent (positioning around
+  their kit, item timings to survive their power spikes) -- there's no
+  equivalent "how to play my_champion" tip. `LaneMatchupGuide.tip` is named and
+  documented accordingly; don't assume a "my_champion_tip" field will ever
+  appear without checking live first.
+
+- **`draftiq tips` and `GET /api/tips` always use a fresh `OpggProvider()`
+  directly, regardless of the active draft's provider (if any) -- the same
+  pattern as `pool import-opgg`.** No equivalent data exists in the offline
+  manual dataset, and neither command requires an active draft to exist at all
+  (matches `pool add`'s "usable standalone" precedent). `GET /api/tips/champions`
+  exists for the same reason `GET /api/pool/champions` does: `/api/champions`
+  resolves through the *active draft's* provider, which could be
+  `ManualCSVProvider` (a different id space entirely) -- the tips panel needs
+  ids that will actually resolve against live OP.GG.
+
 ## OP.GG schema notes (read before touching `providers/opgg.py`)
 
 Everything below was confirmed live against `https://mcp-api.op.gg/mcp` during Phase
@@ -323,7 +373,10 @@ should fail first.
   protocol is designed to express, not a bug. `lol_get_lane_matchup_guide` (the
   arbitrary-pair tool) has no raw win/game counts at all -- it returns prose tips, a
   qualitative lane-advantage indicator, and win-rate-by-game-length curves. That's the
-  right source for Phase 3's tips module, not for `get_matchup`.
+  right source for Phase 3's tips module (`get_lane_matchup_guide`, wired up as
+  `draftiq tips`), not for `get_matchup` -- see "Phase 3: matchup tips" above for the
+  full writeup, including why this tool needs a different champion-param format from
+  every other one (next bullet).
 
 - **`get_synergy`'s signature has no role/position parameters** (per the original
   spec), but OP.GG's synergy tool requires both `my_position` and `synergy_position`.
@@ -338,7 +391,10 @@ should fail first.
   (ddragon id `"MonkeyKing"`), Jarvan IV, Xin Zhao, Renata Glasc. OP.GG's own
   `key` field (from `lol_list_champions`) is identical to Data Dragon's `id` field, so
   no separate id-mapping table is needed -- `Champion.ddragon_id` already *is* the
-  OP.GG key.
+  OP.GG key. **`lol_get_lane_matchup_guide` is the one exception** -- it rejects the
+  tolerant `"MISSFORTUNE"` format outright and needs genuine `UPPER_SNAKE_CASE`
+  derived from the display name instead (`_lane_guide_champion_param`, not
+  `_opgg_champion_param`); see "Phase 3: matchup tips" above.
 
 - **`ids_names` on `summoner_spells` and `stat_mod_names` on `runes` both return raw
   numeric ids** despite the field name promising strings -- a narrow, apparent bug in

@@ -92,6 +92,29 @@ BUILD_TEXT = (
 )
 
 
+# Captured live against lol_get_lane_matchup_guide (Aatrox top vs Darius), trimmed to
+# the fields get_lane_matchup_guide actually reads -- this tool has no
+# desired_output_fields and returns plain JSON, not opgg_format's compact grammar
+# (confirmed live, see providers/opgg.py's module docstring point 9).
+LANE_MATCHUP_GUIDE_TEXT = json.dumps(
+    {
+        "lang": "en_US",
+        "position": "top",
+        "my_champion": "Aatrox",
+        "opponent_champion": "Darius",
+        "data": {
+            "opponent_champion_tip": "Do not get pulled by Darius's (E).",
+            "lane_solo_kill_advantage_champion": "Aatrox",
+            "lane_advantage_champion": "Aatrox",
+            "recommended_play_style": "aggressive",
+            "game_lengths": [
+                {"game_length": 0, "rate": 0.516048, "average": 0.5, "rank": 19},
+                {"game_length": 25, "rate": 0.505086, "average": 0.5, "rank": 24},
+            ],
+        },
+    }
+)
+
 # Captured live against lol_get_summoner_profile (Faker#KR1) -- confirmed there is
 # no role/position field anywhere in this response, see providers/opgg.py's
 # get_summoner_champion_pool docstring.
@@ -143,6 +166,8 @@ def _make_provider() -> OpggProvider:
                 return _mcp_text_result(SYNERGIES_TEXT)
             if tool == "lol_get_summoner_profile":
                 return _mcp_text_result(SUMMONER_PROFILE_TEXT)
+            if tool == "lol_get_lane_matchup_guide":
+                return _mcp_text_result(LANE_MATCHUP_GUIDE_TEXT)
         raise AssertionError(f"unexpected request: {method} {request.url}")
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
@@ -264,6 +289,39 @@ class TestGetSummonerChampionPool:
         provider = _make_provider()
         names = provider.get_summoner_champion_pool("Faker", "KR1", "KR", limit=2)
         assert names == ["Sylas", "Viego"]
+
+
+class TestGetLaneMatchupGuide:
+    """`get_lane_matchup_guide` -- the one tool this provider calls that returns
+    plain JSON directly (no `desired_output_fields`, not `opgg_format`'s compact
+    grammar) and takes no rank/tier parameter at all."""
+
+    def test_parses_tip_and_qualitative_fields(self) -> None:
+        provider = _make_provider()
+        guide = provider.get_lane_matchup_guide(266, 122, Role.TOP)
+        assert guide.my_champion == "Aatrox"
+        assert guide.opponent_champion == "Darius"
+        assert guide.role is Role.TOP
+        assert guide.tip == "Do not get pulled by Darius's (E)."
+        assert guide.lane_advantage == "Aatrox"
+        assert guide.lane_solo_kill_advantage == "Aatrox"
+        assert guide.recommended_play_style == "aggressive"
+
+    def test_parses_win_rate_by_game_length(self) -> None:
+        provider = _make_provider()
+        guide = provider.get_lane_matchup_guide(266, 122, Role.TOP)
+        assert [g.game_length for g in guide.win_rate_by_game_length] == [0, 25]
+        assert guide.win_rate_by_game_length[0].win_rate == pytest.approx(0.516048)
+
+    def test_champion_param_strips_punctuation_and_uses_underscores(self) -> None:
+        """Unlike `_opgg_champion_param` (used by every other tool this provider
+        calls), this tool genuinely requires UPPER_SNAKE_CASE -- confirmed live:
+        apostrophes/periods are stripped entirely, spaces become underscores.
+        `_make_provider`'s handler doesn't inspect the champion params, so this
+        test targets `_lane_guide_champion_param` directly rather than relying on
+        the mock to reject a wrong format."""
+        provider = _make_provider()
+        assert provider._lane_guide_champion_param(21) == "MISS_FORTUNE"  # from CHAMPIONS_TEXT
 
 
 class TestPrefetchForSuggest:

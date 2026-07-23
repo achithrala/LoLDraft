@@ -517,6 +517,72 @@ function renderBuild(build) {
   el.innerHTML = parts.join("");
 }
 
+// ---- matchup tips panel ----
+// Always live OP.GG data, regardless of the active draft's provider -- uses its
+// own champion list (/api/tips/champions) rather than the shared `champions`
+// cache, since that could be the manual dataset's id space instead.
+
+let tipsChampions = [];
+
+function renderTipsSelectors() {
+  const champSelect = document.getElementById("tips-champion");
+  const oppSelect = document.getElementById("tips-opponent");
+  const roleSelect = document.getElementById("tips-role");
+
+  const options = tipsChampions
+    .map((c) => `<option value="${c.champion_id}">${c.name}</option>`)
+    .join("");
+  champSelect.innerHTML = `<option value="">-- champion --</option>${options}`;
+  oppSelect.innerHTML = `<option value="">-- opponent --</option>${options}`;
+  roleSelect.innerHTML = ROLES.map((r) => `<option value="${r}">${r}</option>`).join("");
+}
+
+async function refreshTipsChampions() {
+  try {
+    tipsChampions = await apiGet(`${API}/tips/champions`);
+  } catch {
+    tipsChampions = [];
+  }
+  renderTipsSelectors();
+}
+
+async function onShowTips() {
+  clearError();
+  const champId = document.getElementById("tips-champion").value;
+  const role = document.getElementById("tips-role").value;
+  const oppId = document.getElementById("tips-opponent").value;
+  if (!champId || !role || !oppId) {
+    showError("Choose a champion, role, and opponent first.");
+    return;
+  }
+  const params = new URLSearchParams({ champion_id: champId, role, opponent_id: oppId });
+  try {
+    const guide = await apiGet(`${API}/tips?${params.toString()}`);
+    renderTips(guide);
+  } catch (e) {
+    showError(e.message);
+    document.getElementById("tips-result").innerHTML = "";
+  }
+}
+
+function renderTips(guide) {
+  const el = document.getElementById("tips-result");
+  const parts = [
+    `<p><strong>${guide.my_champion}</strong> vs <strong>${guide.opponent_champion}</strong> (${guide.role})</p>`,
+    `<p>Lane advantage: ${guide.lane_advantage}</p>`,
+    `<p>Solo-kill advantage: ${guide.lane_solo_kill_advantage}</p>`,
+    `<p>Recommended play style: ${guide.recommended_play_style}</p>`,
+    `<p>Tip: ${guide.tip}</p>`,
+  ];
+  if (guide.win_rate_by_game_length && guide.win_rate_by_game_length.length) {
+    const curve = guide.win_rate_by_game_length
+      .map((g) => `${g.game_length}: ${(g.win_rate * 100).toFixed(1)}%`)
+      .join(", ");
+    parts.push(`<p>Win rate by game length: ${curve}</p>`);
+  }
+  el.innerHTML = parts.join("");
+}
+
 // ---- refresh / init ----
 
 function afterMutation() {
@@ -596,12 +662,14 @@ function init() {
   });
   document.getElementById("suggest-role").addEventListener("change", refreshSuggestions);
   document.getElementById("show-build").addEventListener("click", onShowBuild);
+  document.getElementById("show-tips").addEventListener("click", onShowTips);
 
   wireRosterForm("ally");
   wireRosterForm("enemy");
   wirePoolForms();
   refreshPoolChampions();
   refreshPool();
+  refreshTipsChampions();
 
   refreshState();
 }

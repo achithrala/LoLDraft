@@ -31,6 +31,8 @@ uv run draftiq roster add ally Me                   # team membership for this d
 uv run draftiq roster add enemy EnemyMidLaner
 uv run draftiq suggest --role top --pool            # picks: restricted to your roster's ally pools
 uv run draftiq suggest --pool                       # bans: bonus/highlight for enemy roster's pools
+
+uv run draftiq tips Aatrox --role top --opponent Darius  # OP.GG's own matchup tips -- no LLM involved
 ```
 
 Draft state is saved to `.draftiq/state.json` in the current directory between runs --
@@ -46,6 +48,10 @@ ends up where isn't knowable in advance, so `--pool` consults the *union* of a
 side's roster's pools for whichever role is relevant. `--pool` restricts candidates
 for picks, but only adds a visible bonus for bans -- the full ban list is never
 narrowed to what the enemy roster is known to play.
+
+`draftiq tips` surfaces OP.GG's own prose matchup guide directly -- no LLM call, no
+new dependency. Like `pool import-opgg`, it always uses live OP.GG data regardless
+of the active draft's provider, and doesn't require an active draft at all.
 
 ## Project layout
 
@@ -78,6 +84,10 @@ narrowed to what the enemy roster is known to play.
   - `add_to_pool_registry(registry, player, role, champions)` -- appends already-
     resolved `Champion`s into a player's pool, deduped case-insensitively; shared
     by both `cli.py` (fuzzy-resolved names) and `web/app.py` (exact `champion_id`s).
+  - `GameLengthWinRate` / `LaneMatchupGuide` -- OP.GG-only matchup tips (prose
+    tip on playing against the opponent, qualitative lane/solo-kill advantage,
+    recommended play style, win rate by game length). No equivalent in the
+    offline manual dataset.
   - Enums: `Role`, `RankBracket` (OP.GG's real tier vocabulary), `Side`,
     `ActionType`, `DraftMode`, `ProviderName`, `RosterSide` (`ally`/`enemy` --
     relative to the user, not `Side.BLUE`/`RED`, which flips every draft).
@@ -91,6 +101,13 @@ narrowed to what the enemy roster is known to play.
     (and opponent, if given), calls the provider's `get_build`, and prints items,
     runes, skill order, and summoners. A thin renderer -- both providers already
     implement `get_build`.
+  - `tips CHAMPION --role ROLE --opponent CHAMPION` -- OP.GG's own prose lane
+    matchup guide: a tip on playing against the opponent, which champion has
+    the lane/solo-kill advantage, recommended play style, and win rate by game
+    length. Always uses a fresh `OpggProvider()` directly (like
+    `pool import-opgg`) regardless of the active draft's provider -- no
+    equivalent exists in the offline manual dataset, and no active draft is
+    required at all.
   - `suggest [--role ROLE] [--top N] [--lookahead] [--any-role] [--pool]` --
     dispatches on the current action: picks (`--role` required, unless
     `--any-role`) go through `search/greedy.suggest` (or
@@ -196,6 +213,15 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
     reasoning as `prefetch_for_suggest`); used only by `draftiq pool import-opgg`.
     OP.GG exposes no role/position data for this -- confirmed live -- so callers
     must supply the target role themselves.
+  - `get_lane_matchup_guide(my_champion_id, opponent_id, role)` -- prose tips +
+    qualitative lane-advantage indicators for one matchup, via
+    `lol_get_lane_matchup_guide`. Not part of `StatsProvider`; used only by
+    `draftiq tips`/`GET /api/tips`. The one tool this provider calls that takes
+    no `desired_output_fields` and returns plain JSON directly (`json.loads`,
+    not `opgg_format.parse`) and no rank/tier parameter at all. Uses
+    `_lane_guide_champion_param` (not `_opgg_champion_param`) -- this tool needs
+    genuine `UPPER_SNAKE_CASE` derived from the display name and rejects the
+    other tools' more tolerant format outright.
   - `OpggApiError` -- raised when OP.GG's MCP server returns a JSON-RPC error.
   - See `CLAUDE.md` for the full list of schema quirks each method works around.
 - `opgg_format.py` -- `parse(text)`: turns OP.GG's bespoke compact response format
@@ -354,6 +380,12 @@ CLI never needed, provider memoization).
   `POST /api/roster/{add,remove}` (requires an active draft -- roster lives in
   `DraftState`). `suggest` takes a `pool: bool` query param with the same
   restrict-for-picks/bonus-for-bans asymmetry as the CLI's `--pool`.
+  `GET /api/tips` and `GET /api/tips/champions` always construct a fresh
+  `OpggProvider()` directly (like `pool_import_opgg`), regardless of the active
+  draft's provider -- `/api/tips/champions` exists because `/api/champions`/
+  `/api/pool/champions` could resolve through `ManualCSVProvider`'s different id
+  space instead. `OpggApiError` -> 502 (an upstream failure, not a client input
+  problem).
 - `schemas.py` -- request/response pydantic models not already covered by
   `models.py` (`NewDraftRequest`, `BanRequest`, `PickRequest`,
   `DraftStateResponse`/`DraftActionOut` + `build_state_response(sm, provider)`,
@@ -365,15 +397,17 @@ CLI never needed, provider memoization).
   requests are id-based (matching `ban`/`pick`'s web convention -- resolved
   through the champion picker), except `PoolImportOpggRequest`, which is
   name-based since the whole point is importing names the web UI doesn't know
-  about yet. `Recommendation`, `Champion`, and `Build` from `models.py` are reused
-  directly as response bodies elsewhere.
+  about yet. `Recommendation`, `Champion`, `Build`, and `LaneMatchupGuide` from
+  `models.py` are reused directly as response bodies elsewhere.
 - `static/index.html` / `app.js` / `style.css` -- one page, zero build tooling
   (no npm/node/framework): a new-draft form, ban/pick board, champion picker
   (search + click, backed by `GET /api/champions`), a suggestions table with
   Lookahead/Any-role/"Use my pool" toggles that mirror `dispatch.py`'s
   mutual-exclusion rules client-side, a roster panel (ally/enemy player-name
   lists), a champion-pool panel (per-player, per-role, plus an OP.GG-import
-  sub-form), and a build panel. Every mutating action re-fetches
+  sub-form), a build panel, and a matchup-tips panel (champion/role/opponent
+  selects backed by `GET /api/tips/champions`, its own OP.GG-specific champion
+  list). Every mutating action re-fetches
   `GET /api/draft/state` and re-renders from scratch -- the server is always the
   source of truth, no separate client-side draft logic. The board always shows each
   side's 5 picks sorted into canonical role order rather than pick order (unlike
@@ -401,7 +435,14 @@ test class instead of a shared one, since what "correct" means differs per modul
 (hard restriction for `greedy.py`/`priority.py`/`lookahead.py`, bonus-only for
 `ban.py`) -- most notably `test_scoring.py`'s
 `test_pool_restriction_preserves_exposure_to_a_real_off_pool_counter`, a regression
-test for the `legal_ids`-vs-`candidate_ids` bug described above.
+test for the `legal_ids`-vs-`candidate_ids` bug described above. `test_opgg_provider.py`'s
+`TestGetLaneMatchupGuide` covers `get_lane_matchup_guide` against a canned real plain-JSON
+response (not `opgg_format`'s grammar) and `_lane_guide_champion_param`'s stricter
+`UPPER_SNAKE_CASE` formatting directly, since the mock transport itself doesn't
+validate the champion-param format the way live OP.GG does. `draftiq tips`/
+`GET /api/tips` have no offline CLI/web e2e coverage -- like `pool import-opgg`,
+they always require live OP.GG data with no manual-dataset equivalent to mock a
+full command flow against meaningfully offline; verified live instead.
 
 **`data/`**
 

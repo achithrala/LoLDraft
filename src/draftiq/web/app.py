@@ -29,6 +29,7 @@ from draftiq.draft.state import DraftError, DraftStateMachine
 from draftiq.models import (
     Build,
     Champion,
+    LaneMatchupGuide,
     ProviderName,
     Recommendation,
     Role,
@@ -170,6 +171,33 @@ def create_app() -> FastAPI:
                 status_code=404,
                 detail=f"No build data available for {champ.name} ({role.value}): {e}",
             ) from e
+
+    @app.get("/api/tips/champions", response_model=list[Champion])
+    def tips_champions() -> list[Champion]:
+        """A dedicated OP.GG champion list for the tips panel -- `/api/champions`/
+        `/api/pool/champions` can resolve to the *active draft's* provider (which
+        could be `ManualCSVProvider`, a different id space entirely), but
+        `/api/tips` always uses OP.GG regardless. The frontend needs ids that will
+        actually resolve there."""
+        return OpggProvider().get_champions()
+
+    @app.get("/api/tips", response_model=LaneMatchupGuide)
+    def tips(champion_id: int, opponent_id: int, role: Role) -> LaneMatchupGuide:
+        """Always uses a fresh `OpggProvider()` directly, regardless of the active
+        draft's provider (if any) -- same reasoning as `pool_import_opgg`: no
+        equivalent exists in the offline manual dataset. Doesn't require an
+        active draft."""
+        provider = OpggProvider()
+        champions = provider.get_champions()
+        try:
+            champ = resolve_champion_id(champion_id, champions)
+            opponent = resolve_champion_id(opponent_id, champions)
+        except UnknownChampionIdError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        try:
+            return provider.get_lane_matchup_guide(champ.champion_id, opponent.champion_id, role)
+        except OpggApiError as e:
+            raise HTTPException(status_code=502, detail=str(e)) from e
 
     @app.get("/api/draft/suggest", response_model=list[Recommendation])
     def suggest(

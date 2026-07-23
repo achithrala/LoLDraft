@@ -150,6 +150,33 @@ class Build(BaseModel):
     source: str = "unknown"
 
 
+class GameLengthWinRate(BaseModel):
+    """One point on a win-rate-by-game-length curve. `game_length`'s exact unit
+    isn't documented by OP.GG -- confirmed live values (0, 25, 30, 35, 40) look
+    minute-like, but this is passed through raw rather than guessed at and
+    relabeled."""
+
+    game_length: int
+    win_rate: float
+
+
+class LaneMatchupGuide(BaseModel):
+    """Prose tips + qualitative lane-advantage indicators for one champion-vs-
+    champion matchup -- from OP.GG's `lol_get_lane_matchup_guide` only (no
+    equivalent in the offline manual dataset). `tip` is specifically about
+    playing *against* `opponent_champion` (OP.GG exposes no symmetric tip about
+    playing `my_champion` itself)."""
+
+    my_champion: str
+    opponent_champion: str
+    role: Role
+    tip: str
+    lane_advantage: str
+    lane_solo_kill_advantage: str
+    recommended_play_style: str
+    win_rate_by_game_length: list[GameLengthWinRate] = Field(default_factory=list)
+
+
 class TermContribution(BaseModel):
     """One labeled term in a score's breakdown, e.g. ("base_rate", 0.512)."""
 
