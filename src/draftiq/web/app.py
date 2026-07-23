@@ -26,14 +26,31 @@ from fastapi.staticfiles import StaticFiles
 
 from draftiq import persistence
 from draftiq.draft.state import DraftError, DraftStateMachine
-from draftiq.models import Build, Champion, ProviderName, Recommendation, Role
+from draftiq.models import (
+    Build,
+    Champion,
+    ProviderName,
+    Recommendation,
+    Role,
+    RosterSide,
+    add_to_pool_registry,
+)
 from draftiq.providers.base import StatsProvider
+from draftiq.providers.opgg import OpggApiError, OpggProvider
 from draftiq.search.dispatch import resolve_suggestion
 from draftiq.web.schemas import (
     BanRequest,
     DraftStateResponse,
     NewDraftRequest,
     PickRequest,
+    PoolAddRequest,
+    PoolClearRequest,
+    PoolImportOpggRequest,
+    PoolRemoveRequest,
+    PoolResponse,
+    RosterAddRequest,
+    RosterRemoveRequest,
+    RosterResponse,
     UnknownChampionIdError,
     build_state_response,
     resolve_champion_id,
@@ -160,6 +177,7 @@ def create_app() -> FastAPI:
         top: int = 5,
         lookahead: bool = False,
         any_role: bool = False,
+        pool: bool = False,
     ) -> list[Recommendation]:
         with persistence.STATE_LOCK:
             sm = persistence.load_state_machine()
@@ -169,7 +187,9 @@ def create_app() -> FastAPI:
                 status_code=400, detail="The draft is complete -- nothing left to suggest."
             )
         try:
-            recs, _show_role = resolve_suggestion(sm, provider, role, top, lookahead, any_role)
+            recs, _show_role = resolve_suggestion(
+                sm, provider, role, top, lookahead, any_role, pool
+            )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return recs
@@ -180,5 +200,105 @@ def create_app() -> FastAPI:
             sm = persistence.load_state_machine()
         provider = _cached_provider(app, sm.state.provider)
         return provider.get_champions()
+
+    @app.get("/api/pool/champions", response_model=list[Champion])
+    def pool_champions() -> list[Champion]:
+        """Unlike `/api/champions`, doesn't require an active draft -- the pool
+        panel is meant to be usable before you've ever clicked "New Draft"."""
+        return persistence.get_active_or_default_provider().get_champions()
+
+    @app.get("/api/pool", response_model=PoolResponse)
+    def get_pool() -> PoolResponse:
+        with persistence.STATE_LOCK:
+            registry = persistence.load_pool_registry()
+        return PoolResponse(registry=registry)
+
+    @app.post("/api/pool/add", response_model=PoolResponse)
+    def pool_add(body: PoolAddRequest) -> PoolResponse:
+        provider = persistence.get_active_or_default_provider()
+        try:
+            champ = resolve_champion_id(body.champion_id, provider.get_champions())
+        except UnknownChampionIdError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        with persistence.STATE_LOCK:
+            registry = persistence.load_pool_registry()
+            add_to_pool_registry(registry, body.player, body.role, [champ])
+            persistence.save_pool_registry(registry)
+        return PoolResponse(registry=registry)
+
+    @app.post("/api/pool/remove", response_model=PoolResponse)
+    def pool_remove(body: PoolRemoveRequest) -> PoolResponse:
+        provider = persistence.get_active_or_default_provider()
+        try:
+            champ = resolve_champion_id(body.champion_id, provider.get_champions())
+        except UnknownChampionIdError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        with persistence.STATE_LOCK:
+            registry = persistence.load_pool_registry()
+            pool = registry.get(body.player)
+            if pool is not None and body.role in pool.by_role:
+                pool.by_role[body.role] = [
+                    n for n in pool.by_role[body.role] if n.lower() != champ.name.lower()
+                ]
+            persistence.save_pool_registry(registry)
+        return PoolResponse(registry=registry)
+
+    @app.post("/api/pool/clear", response_model=PoolResponse)
+    def pool_clear(body: PoolClearRequest) -> PoolResponse:
+        with persistence.STATE_LOCK:
+            registry = persistence.load_pool_registry()
+            if body.player in registry:
+                if body.role is None:
+                    del registry[body.player]
+                else:
+                    registry[body.player].by_role.pop(body.role, None)
+            persistence.save_pool_registry(registry)
+        return PoolResponse(registry=registry)
+
+    @app.post("/api/pool/import-opgg", response_model=PoolResponse)
+    def pool_import_opgg(body: PoolImportOpggRequest) -> PoolResponse:
+        opgg = OpggProvider()
+        try:
+            names = opgg.get_summoner_champion_pool(
+                body.game_name, body.tag_line, body.region, limit=body.top
+            )
+        except OpggApiError as e:
+            raise HTTPException(status_code=502, detail=str(e)) from e
+        # Iterate `names` (already play-count-sorted by get_summoner_champion_pool),
+        # not opgg.get_champions()'s own order, so the registry preserves the same
+        # most-played-first ordering the CLI's `pool import-opgg` does.
+        by_name = {c.name.lower(): c for c in opgg.get_champions()}
+        champs = [by_name[n.lower()] for n in names if n.lower() in by_name]
+        with persistence.STATE_LOCK:
+            registry = persistence.load_pool_registry()
+            add_to_pool_registry(registry, body.player, body.role, champs)
+            persistence.save_pool_registry(registry)
+        return PoolResponse(registry=registry)
+
+    @app.get("/api/roster", response_model=RosterResponse)
+    def get_roster() -> RosterResponse:
+        with persistence.STATE_LOCK:
+            sm = persistence.load_state_machine()
+        return RosterResponse(ally=sm.state.roster.ally, enemy=sm.state.roster.enemy)
+
+    @app.post("/api/roster/add", response_model=RosterResponse)
+    def roster_add(body: RosterAddRequest) -> RosterResponse:
+        with persistence.STATE_LOCK:
+            sm = persistence.load_state_machine()
+            names = sm.state.roster.ally if body.side is RosterSide.ALLY else sm.state.roster.enemy
+            if body.player not in names:
+                names.append(body.player)
+                persistence.save_state_machine(sm)
+        return RosterResponse(ally=sm.state.roster.ally, enemy=sm.state.roster.enemy)
+
+    @app.post("/api/roster/remove", response_model=RosterResponse)
+    def roster_remove(body: RosterRemoveRequest) -> RosterResponse:
+        with persistence.STATE_LOCK:
+            sm = persistence.load_state_machine()
+            names = sm.state.roster.ally if body.side is RosterSide.ALLY else sm.state.roster.enemy
+            if body.player in names:
+                names.remove(body.player)
+                persistence.save_state_machine(sm)
+        return RosterResponse(ally=sm.state.roster.ally, enemy=sm.state.roster.enemy)
 
     return app

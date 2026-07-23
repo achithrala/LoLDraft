@@ -290,3 +290,58 @@ class TestSuggestPopularityWeighting:
 
         recs = suggest(sm, _FakeProvider(), role=Role.TOP, top_n=20)
         assert [r.champion_id for r in recs] == [901, 902]
+
+
+class TestSuggestPoolRestriction:
+    """`greedy.suggest`'s `pool_ids` param (an already-resolved set -- see
+    `models.consolidated_pool_ids`) restricts the candidate set for picks. The
+    critical correctness property: it must restrict *which candidates get scored
+    and returned*, without restricting `remaining_enemy_ids` (fed to counterpick
+    exposure) -- the enemy isn't limited to my pool."""
+
+    def test_restricts_to_pool_members_only(self, provider: ManualCSVProvider) -> None:
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        _burn_ban_phase(sm)
+        recs = suggest(sm, provider, role=Role.TOP, top_n=20, pool_ids={1, 4})  # Aatrox, Jax
+        assert {r.champion_id for r in recs} == {1, 4}
+
+    def test_none_pool_ids_is_unrestricted(self, provider: ManualCSVProvider) -> None:
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        _burn_ban_phase(sm)
+        with_none = suggest(sm, provider, role=Role.TOP, top_n=20, pool_ids=None)
+        without_param = suggest(sm, provider, role=Role.TOP, top_n=20)
+        assert {r.champion_id for r in with_none} == {r.champion_id for r in without_param}
+
+    def test_empty_pool_ids_returns_nothing(self, provider: ManualCSVProvider) -> None:
+        """The `set()` case: a pool was defined but nothing in it resolves --
+        distinct from `pool_ids=None` (unrestricted). Must not crash or silently
+        fall back to unrestricted."""
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        _burn_ban_phase(sm)
+        recs = suggest(sm, provider, role=Role.TOP, top_n=20, pool_ids=set())
+        assert recs == []
+
+    def test_pool_restriction_preserves_exposure_to_a_real_off_pool_counter(
+        self, provider: ManualCSVProvider
+    ) -> None:
+        """Regression test for the bug the plan specifically flagged: restricting
+        the candidate set must NOT restrict `remaining_enemy_ids` (counterpick
+        exposure's view of what the enemy could still draft). Malphite pooled
+        alone must still show the same exposure to Darius (who isn't in the pool)
+        as an unrestricted run does."""
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        _burn_ban_phase(sm)
+
+        unrestricted = _only(suggest(sm, provider, role=Role.TOP, top_n=20), {3})
+        restricted = suggest(sm, provider, role=Role.TOP, top_n=20, pool_ids={3})  # Malphite only
+
+        assert len(restricted) == 1
+        assert restricted[0].champion_id == 3
+        unrestricted_exposure = next(
+            t.value for t in unrestricted[0].terms if t.label == "exposure to Darius"
+        )
+        restricted_exposure = next(
+            t.value for t in restricted[0].terms if t.label == "exposure to Darius"
+        )
+        assert restricted_exposure == unrestricted_exposure
+        assert restricted_exposure < 0.0

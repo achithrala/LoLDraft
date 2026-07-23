@@ -217,3 +217,53 @@ class TestSuggestPriority:
             champ_id += 1
         with pytest.raises(ValueError, match="already complete"):
             suggest_priority(sm, FakeProvider())
+
+
+class TestSuggestPriorityPool:
+    """`pool_ids_by_role` restricts per-role, not with a single flat filter -- a
+    role only counts as open for a candidate if that specific role's set is
+    `None` (no pool data -- unrestricted) or contains the candidate."""
+
+    def test_partial_pool_mixes_restricted_and_open_roles(self) -> None:
+        """Top and mid are pool-restricted; jungle/bottom/support are left open
+        (`None`). FLEX (normally top, with jungle as a flex option) is excluded
+        from top by the pool but must still surface via jungle -- proving a
+        candidate isn't dropped just because their *best* role got restricted out
+        from under them, only if *every* eligible role does."""
+        pool_ids_by_role = {
+            Role.TOP: {TOP_ONLY},
+            Role.JUNGLE: None,
+            Role.MID: {MID_ONLY},
+            Role.BOTTOM: None,
+            Role.SUPPORT: None,
+        }
+        sm = _fresh_soloq_first_pick()
+        recs = suggest_priority(sm, FakeProvider(), top_n=20, pool_ids_by_role=pool_ids_by_role)
+        by_id = {r.champion_id: r for r in recs}
+
+        # Excluded from its best role (top) by the pool restriction, but jungle is
+        # unrestricted -- must still appear, now via jungle instead of top.
+        assert FLEX in by_id
+        assert by_id[FLEX].role is Role.JUNGLE
+
+        # In the top pool -- appears as normal, scored at top.
+        assert by_id[TOP_ONLY].role is Role.TOP
+        # Not in the top pool and has no other eligible unfilled role -- excluded.
+        assert JUNGLE_ONLY not in by_id or by_id[JUNGLE_ONLY].role is Role.JUNGLE
+
+        # Unrestricted roles behave exactly as without a pool at all.
+        assert by_id[MID_ONLY].role is Role.MID
+        assert by_id[BOTTOM_ONLY].role is Role.BOTTOM
+        assert by_id[SUPPORT_ONLY].role is Role.SUPPORT
+
+    def test_candidate_excluded_from_every_eligible_role_is_dropped(self) -> None:
+        """TOP_ONLY only has real data at top; restricting top to a pool that
+        excludes them, with every other role also restricted to pools that don't
+        include them either, must drop them from the results entirely rather than
+        crash on an empty per-candidate role set."""
+        pool_ids_by_role: dict[Role, set[int] | None] = {
+            role: {FLEX} for role in Role
+        }  # only FLEX is ever eligible
+        sm = _fresh_soloq_first_pick()
+        recs = suggest_priority(sm, FakeProvider(), top_n=20, pool_ids_by_role=pool_ids_by_role)
+        assert {r.champion_id for r in recs} == {FLEX}

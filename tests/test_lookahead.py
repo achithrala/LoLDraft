@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from draftiq.draft.state import DraftStateMachine
-from draftiq.models import DraftMode, Role
+from draftiq.models import DraftMode, Recommendation, Role
 from draftiq.providers.manual import ManualCSVProvider
 from draftiq.search.lookahead import suggest_with_lookahead
 
@@ -88,3 +88,46 @@ class TestSuggestWithLookahead:
         recs = suggest_with_lookahead(sm, provider, role=Role.SUPPORT, top_n=5, lookahead_width=5)
         assert recs  # no crash, still returns a ranking
         assert not any(any(t.label == "opponent best reply" for t in r.terms) for r in recs)
+
+
+class TestSuggestWithLookaheadPool:
+    """`pool_ids` must reach ply 1's candidate generation but never ply 2's
+    opponent-response simulation -- see lookahead.py's module docstring."""
+
+    def test_pool_ids_restricts_ply1_candidates(self, provider: ManualCSVProvider) -> None:
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        _burn_ban_phase(sm)
+        recs = suggest_with_lookahead(
+            sm, provider, role=Role.TOP, top_n=20, lookahead_width=8, pool_ids={1, 4}
+        )
+        assert recs
+        assert {r.champion_id for r in recs} <= {1, 4}
+
+    def test_pool_ids_does_not_affect_ply2_opponent_response(
+        self, provider: ManualCSVProvider
+    ) -> None:
+        """Ply 2 simulates the *opponent's* best reply -- restricting our own
+        candidate pool must never leak into that simulation. `pool_ids` is set to
+        exactly the unrestricted run's own ply-1 candidates (not an arbitrary
+        smaller set, which the actual ranking -- shaped by popularity, matchups,
+        etc. -- isn't guaranteed to overlap with), isolating the question: does
+        merely *passing* `pool_ids` change ply 2's per-candidate penalty for the
+        same candidates? It must not."""
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        _burn_ban_phase(sm)
+
+        unrestricted = suggest_with_lookahead(
+            sm, provider, role=Role.TOP, top_n=20, lookahead_width=8
+        )
+        pool_ids = {r.champion_id for r in unrestricted}
+        restricted = suggest_with_lookahead(
+            sm, provider, role=Role.TOP, top_n=20, lookahead_width=8, pool_ids=pool_ids
+        )
+
+        def penalty_for(recs: list[Recommendation], champ_id: int) -> float:
+            rec = next(r for r in recs if r.champion_id == champ_id)
+            return next((t.value for t in rec.terms if t.label == "opponent best reply"), 0.0)
+
+        assert {r.champion_id for r in restricted} == pool_ids
+        for champ_id in pool_ids:
+            assert penalty_for(restricted, champ_id) == penalty_for(unrestricted, champ_id)

@@ -24,12 +24,28 @@ uv run draftiq suggest --role top --lookahead  # ...also weighing the opponent's
 uv run draftiq suggest --any-role           # picks: ranked across all your unfilled roles at once
 uv run draftiq state                        # show the full draft so far
 uv run draftiq serve                        # local web UI at http://127.0.0.1:8765
+
+uv run draftiq pool add Me top Aatrox Darius        # champions a named player actually plays, per role
+uv run draftiq pool import-opgg Me top "Faker#KR1" --region KR  # ...or import from a real summoner
+uv run draftiq roster add ally Me                   # team membership for this draft (no role assignment)
+uv run draftiq roster add enemy EnemyMidLaner
+uv run draftiq suggest --role top --pool            # picks: restricted to your roster's ally pools
+uv run draftiq suggest --pool                       # bans: bonus/highlight for enemy roster's pools
 ```
 
 Draft state is saved to `.draftiq/state.json` in the current directory between runs --
 `draftiq serve`'s web UI reads/writes the exact same file, so the CLI and a browser
 tab can drive one live draft interchangeably. The web UI is local-only (no auth,
 binds `127.0.0.1` by default) and single-draft, matching the CLI's own trust model.
+
+Champion pools (`.draftiq/pools.json`) are separate from draft state and persist
+across drafts -- a teammate's pool doesn't change between games. Team rosters reset
+on every `draftiq new` (who's actually in a given draft does change every game) and
+deliberately don't assign players to specific roles: pick order/priority means who
+ends up where isn't knowable in advance, so `--pool` consults the *union* of a
+side's roster's pools for whichever role is relevant. `--pool` restricts candidates
+for picks, but only adds a visible bonus for bans -- the full ban list is never
+narrowed to what the enemy roster is known to play.
 
 ## Project layout
 
@@ -45,10 +61,26 @@ binds `127.0.0.1` by default) and single-draft, matching the CLI's own trust mod
   - `Recommendation` / `TermContribution` -- a scored candidate (including which
     `role` it was scored for) plus its term-by-term breakdown (`base_rate`,
     `vs <enemy>`, `with <ally>`, ...).
-  - `DraftState` / `DraftAction` -- the persisted draft: mode, rank, provider, and
-    the ordered list of bans/picks so far.
+  - `DraftState` / `DraftAction` -- the persisted draft: mode, rank, provider,
+    `roster` (this draft's ally/enemy team membership), and the ordered list of
+    bans/picks so far.
+  - `ChampionPool` -- one named player's per-role champion pool (stored by
+    champion *name*, not id -- ids aren't stable across providers), with
+    `resolve_ids(role, champions) -> set[int] | None` (`None` = no pool data for
+    this role, don't restrict; `set()` = pool data exists but nothing resolves).
+  - `TeamRoster` -- a draft's `ally`/`enemy` player-name lists. Membership only,
+    no role assignment -- pick order/priority means who ends up in which slot
+    isn't knowable in advance, so suggestions consult the *union* of a side's
+    players' pools for whatever role is relevant instead of a fixed mapping.
+  - `consolidated_pool_ids(registry, player_names, role, champions)` -- unions
+    every named player's resolved pool for one role; same `None`-vs-`set()`
+    contract as `ChampionPool.resolve_ids`.
+  - `add_to_pool_registry(registry, player, role, champions)` -- appends already-
+    resolved `Champion`s into a player's pool, deduped case-insensitively; shared
+    by both `cli.py` (fuzzy-resolved names) and `web/app.py` (exact `champion_id`s).
   - Enums: `Role`, `RankBracket` (OP.GG's real tier vocabulary), `Side`,
-    `ActionType`, `DraftMode`, `ProviderName`.
+    `ActionType`, `DraftMode`, `ProviderName`, `RosterSide` (`ally`/`enemy` --
+    relative to the user, not `Side.BLUE`/`RED`, which flips every draft).
 - `cli.py` -- the `draftiq` command line app, built on `typer`:
   - `new` -- starts a draft (`--mode`, `--rank`, `--provider`), writes
     `.draftiq/state.json`.
@@ -59,15 +91,33 @@ binds `127.0.0.1` by default) and single-draft, matching the CLI's own trust mod
     (and opponent, if given), calls the provider's `get_build`, and prints items,
     runes, skill order, and summoners. A thin renderer -- both providers already
     implement `get_build`.
-  - `suggest [--role ROLE] [--top N] [--lookahead] [--any-role]` -- dispatches on
-    the current action: picks (`--role` required, unless `--any-role`) go through
-    `search/greedy.suggest` (or `search/lookahead.suggest_with_lookahead` with
-    `--lookahead`, or `search/priority.suggest_priority` with `--any-role`, which
-    ranks champions across every unfilled role for your side instead of one and
-    can't be combined with `--lookahead`); bans (`--role`/`--any-role` unused) go
-    through `search/ban.suggest_bans`. Renders a `rich` table (score, 90% credible
-    interval, sample size, term breakdown -- plus a Role column for `--any-role`)
-    either way.
+  - `suggest [--role ROLE] [--top N] [--lookahead] [--any-role] [--pool]` --
+    dispatches on the current action: picks (`--role` required, unless
+    `--any-role`) go through `search/greedy.suggest` (or
+    `search/lookahead.suggest_with_lookahead` with `--lookahead`, or
+    `search/priority.suggest_priority` with `--any-role`, which ranks champions
+    across every unfilled role for your side instead of one and can't be
+    combined with `--lookahead`); bans (`--role`/`--any-role` unused) go through
+    `search/ban.suggest_bans`. `--pool` means something different depending on
+    the action: for picks/`--any-role` it *restricts* candidates to the union of
+    `draftiq roster`'s ally players' pools for the relevant role; for bans it
+    only adds a bonus/highlight for candidates in the enemy roster's pools --
+    the full ban list is never narrowed. Renders a `rich` table (score, 90%
+    credible interval, sample size, term breakdown -- plus a Role column for
+    `--any-role`) either way.
+  - `pool add/remove/show/clear/import-opgg` -- manage named players' champion
+    pools (`.draftiq/pools.json`, independent of any one draft). `add`/`remove`
+    fuzzy-resolve champion names the same way `ban`/`pick` do, against
+    `persistence.get_active_or_default_provider()` (the active draft's provider,
+    or `ManualCSVProvider` as a bootstrap default before any draft exists).
+    `import-opgg <player> <role> <riot_id> --region R [--top N]` pulls a real
+    summoner's most-played champions via live OP.GG data (always uses
+    `OpggProvider` directly, regardless of the active draft's provider) --
+    requires an explicit `role` since OP.GG exposes no role/position data for a
+    summoner's champion history.
+  - `roster add/remove/show` -- manage the *current draft's* ally/enemy team
+    membership (`sm.state.roster`, requires an active draft, resets on every
+    `new`). Names only, no role assignment (see `models.TeamRoster`).
   - `state` -- prints mode/rank/provider, all bans, both sides' picks (in the order
     they were actually picked), and whose turn is next. Once the draft is complete,
     also prints a "Final teams" section (`_render_final_teams`, shared with
@@ -99,6 +149,13 @@ binds `127.0.0.1` by default) and single-draft, matching the CLI's own trust mod
     fresh single-threaded process per invocation, so a lock provides no benefit
     there). Serializes each mutating web request's load-mutate-save cycle so two
     concurrent browser requests can't race and silently clobber one another's write.
+  - `load_pool_registry()`/`save_pool_registry(registry)` -- same shape as the
+    state functions, for `.draftiq/pools.json` (`dict[str, ChampionPool]`,
+    reusable across drafts, separate from `state.json` since a player's pool
+    doesn't reset when a new draft starts).
+  - `get_active_or_default_provider()` -- the active draft's provider if
+    `state.json` loads cleanly, else `ManualCSVProvider()`. Lets `pool`/`roster`
+    commands validate/resolve champion names even before any draft has started.
 
 **`src/draftiq/providers/`** -- each data source implements the same `StatsProvider`
 Protocol, so nothing else in the codebase knows or cares which one it's talking to.
@@ -133,6 +190,12 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
   - `prefetch_for_suggest` -- warms the cache for many champions concurrently via a
     thread pool; without it, a cold `suggest()` call is one sequential HTTP
     round-trip per legal champion (confirmed at 2+ minutes for the full roster).
+  - `get_summoner_champion_pool(game_name, tag_line, region, limit)` -- a real
+    summoner's most-played champion names, sorted by play count. Not part of
+    `StatsProvider` (`ManualCSVProvider` has no concept of a real summoner, same
+    reasoning as `prefetch_for_suggest`); used only by `draftiq pool import-opgg`.
+    OP.GG exposes no role/position data for this -- confirmed live -- so callers
+    must supply the target role themselves.
   - `OpggApiError` -- raised when OP.GG's MCP server returns a JSON-RPC error.
   - See `CLAUDE.md` for the full list of schema quirks each method works around.
 - `opgg_format.py` -- `parse(text)`: turns OP.GG's bespoke compact response format
@@ -198,52 +261,75 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
 
 **`src/draftiq/search/`**
 
-- `greedy.py` -- `suggest(sm, provider, role, top_n)`: gathers the legal candidate
-  pool and each side's picks from the state machine, calls the provider's optional
-  `prefetch_for_suggest` if it has one, scores every legal champion via
-  `score_candidate`, and returns the top N by total score. 1-ply: doesn't consider
-  what the opponent might pick next. Also adds a `popularity` tiebreaker term --
-  `POPULARITY_WEIGHT_SCALE * (pick_rate / max_pick_rate_among_legal_ids)`, relative
-  to the most-picked legal candidate in this exact role/rank query rather than a
-  flat `pick_rate` scale, so it behaves consistently whether pick rates are spread
-  wide (the manual dataset) or clustered tight (real OP.GG data) -- added after live
-  suggestions surfaced legitimately-strong-but-rarely-played picks (e.g. a top-lane
-  Warwick with a large sample and a genuinely good win rate) ahead of standard picks
-  with a similar win rate; see the module's docstring for the full reasoning and a
-  documented first-attempt-too-weak calibration finding.
-- `lookahead.py` -- `suggest_with_lookahead(...)`: 2-ply. Runs `greedy.suggest` for
-  a wider candidate pool, then for each candidate simulates picking it and checks
-  the opponent's best available reply across each of their still-unfilled roles
-  (SOLOQ has no pre-assigned role per pick slot, so there's no single deterministic
-  "their next pick"), penalizing candidates that would hand them a strong follow-up.
-  Opt-in (`draftiq suggest --lookahead`) since it's several extra scoring passes.
-- `ban.py` -- `suggest_bans(sm, provider, top_n)`: a genuinely different question
-  from picking -- not "what's good for me" but "how much does denying this hurt the
-  opponent." Reuses `score_candidate` with the sides swapped (their picks as allies,
-  ours as the matchup threat) to get "how good would this be for them" for free,
-  checked across each of their still-unfilled roles (bans aren't role-locked) and
-  weighted by pick rate. Automatic whenever `draftiq suggest` runs during a ban.
-- `priority.py` -- `suggest_priority(sm, provider, top_n)`: a third question, not in
-  the original spec -- "which champion should I grab right now, whichever role it
-  fills," for flex/contested picks rather than a role you've already committed to.
-  Scores every legal champion against each of *your* still-unfilled roles (like
-  `ban.py`, but for your own roles) and keeps the best; adds a small flex-value bonus
-  when more than one role scores close to the best (only counting roles the champion
-  actually has games in -- a role with zero recorded games shrinks to that role's
-  population baseline, which is "no evidence," not "proven competence," and must not
-  count), and a contest-risk bonus (same `1 - (1-pick_rate)**remaining_enemy_picks`
-  shape as counterpick exposure) for champions likely to get taken if you wait.
-  Opt-in via `draftiq suggest --any-role`; picks only, and not combinable with
-  `--lookahead` yet.
+- `greedy.py` -- `suggest(sm, provider, role, top_n, pool_ids=None)`: gathers the
+  legal candidate pool and each side's picks from the state machine, calls the
+  provider's optional `prefetch_for_suggest` if it has one, scores every legal
+  champion via `score_candidate`, and returns the top N by total score. 1-ply:
+  doesn't consider what the opponent might pick next. Also adds a `popularity`
+  tiebreaker term -- `POPULARITY_WEIGHT_SCALE * (pick_rate /
+  max_pick_rate_among_legal_ids)`, relative to the most-picked legal candidate in
+  this exact role/rank query rather than a flat `pick_rate` scale, so it behaves
+  consistently whether pick rates are spread wide (the manual dataset) or
+  clustered tight (real OP.GG data) -- added after live suggestions surfaced
+  legitimately-strong-but-rarely-played picks (e.g. a top-lane Warwick with a
+  large sample and a genuinely good win rate) ahead of standard picks with a
+  similar win rate; see the module's docstring for the full reasoning and a
+  documented first-attempt-too-weak calibration finding. `pool_ids` (an
+  already-resolved id set, see `models.consolidated_pool_ids`) restricts the
+  candidate set when given -- via a *separate* `candidate_ids` variable, not by
+  reassigning `legal_ids`, since `legal_ids` also feeds `remaining_enemy_ids` into
+  `score_candidate` for counterpick exposure, which must stay unrestricted (the
+  enemy isn't limited to my pool) -- see `CLAUDE.md` for the bug this guards
+  against and its regression test.
+- `lookahead.py` -- `suggest_with_lookahead(..., pool_ids=None)`: 2-ply. Runs
+  `greedy.suggest` for a wider candidate pool, then for each candidate simulates
+  picking it and checks the opponent's best available reply across each of their
+  still-unfilled roles (SOLOQ has no pre-assigned role per pick slot, so there's
+  no single deterministic "their next pick"), penalizing candidates that would
+  hand them a strong follow-up. Opt-in (`draftiq suggest --lookahead`) since it's
+  several extra scoring passes. `pool_ids` reaches only ply 1's candidate
+  generation, deliberately never ply 2's opponent-response simulation (the
+  opponent doesn't share your pool).
+- `ban.py` -- `suggest_bans(sm, provider, top_n, pool_ids_by_role=None)`: a
+  genuinely different question from picking -- not "what's good for me" but "how
+  much does denying this hurt the opponent." Reuses `score_candidate` with the
+  sides swapped (their picks as allies, ours as the matchup threat) to get "how
+  good would this be for them" for free, checked across each of their
+  still-unfilled roles (bans aren't role-locked) and weighted by pick rate.
+  Automatic whenever `draftiq suggest` runs during a ban. `pool_ids_by_role` (the
+  union of the *enemy* roster's pools per role) adds a `POOL_BONUS = 0.05`
+  `"in enemy pool"` term for a known match -- unlike every other `pool_ids*`
+  parameter in this package, this is a bonus/highlight, **never** a restriction:
+  the full ban list always stays the same length.
+- `priority.py` -- `suggest_priority(sm, provider, top_n, pool_ids_by_role=None)`:
+  a third question, not in the original spec -- "which champion should I grab
+  right now, whichever role it fills," for flex/contested picks rather than a
+  role you've already committed to. Scores every legal champion against each of
+  *your* still-unfilled roles (like `ban.py`, but for your own roles) and keeps
+  the best; adds a small flex-value bonus when more than one role scores close to
+  the best (only counting roles the champion actually has games in -- a role with
+  zero recorded games shrinks to that role's population baseline, which is "no
+  evidence," not "proven competence," and must not count), and a contest-risk
+  bonus (same `1 - (1-pick_rate)**remaining_enemy_picks` shape as counterpick
+  exposure) for champions likely to get taken if you wait. Opt-in via
+  `draftiq suggest --any-role`; picks only, and not combinable with `--lookahead`
+  yet. `pool_ids_by_role` (per-role, unlike `greedy.py`'s single set -- a
+  candidate can be pooled for one role and not another) restricts which of a
+  candidate's unfilled roles are even scored; a candidate eligible in none of
+  them is dropped entirely rather than crashing on an empty per-candidate role set.
 - `dispatch.py` -- `resolve_suggestion(sm, provider, role, top_n, lookahead,
-  any_role) -> (recommendations, show_role_column)`: the CLI's original
-  `suggest` if/elif chain (ban vs. any-role vs. role-locked pick, and the exact
-  three validation-error strings), extracted so `cli.suggest` and the web
+  any_role, pool=False) -> (recommendations, show_role_column)`: the CLI's
+  original `suggest` if/elif chain (ban vs. any-role vs. role-locked pick, and the
+  exact three validation-error strings), extracted so `cli.suggest` and the web
   `suggest` endpoint share one implementation and can never disagree about what's
   valid. `SuggestRequestError` (a `ValueError` subclass) covers the three
   validation cases; a plain `ValueError` from the underlying search module (e.g.
   "already complete") can still surface too -- callers catch `ValueError`
-  broadly.
+  broadly. Also the one place that resolves the `pool: bool` flag into actual
+  champion-id sets (loading `persistence.load_pool_registry()` and reading
+  `sm.state.roster`), since it already knows the current side and action type --
+  restricting via the *ally* roster for picks, bonusing via the *enemy* roster
+  for bans (see `ban.py` above).
 
 **`src/draftiq/web/`** -- the local web UI: a FastAPI app re-exposing the same
 `DraftStateMachine`/`StatsProvider`/`search/*` logic over HTTP, plus a static
@@ -260,35 +346,62 @@ CLI never needed, provider memoization).
   corrupt `state.json` -> 500, and `draft.state.DraftError` subclasses -> 409;
   per-route `try`/`except` handles unknown `champion_id`s and `suggest`/`build`'s
   own errors -> 400/404. Every mutating route holds `persistence.STATE_LOCK`
-  across its whole load-mutate-save critical section.
+  across its whole load-mutate-save critical section. Pool/roster routes:
+  `GET /api/pool` (whole registry), `POST /api/pool/{add,remove,clear,import-opgg}`,
+  `GET /api/pool/champions` (like `/api/champions` but doesn't require an active
+  draft -- backed by `get_active_or_default_provider()`, so the pool panel works
+  before you've ever clicked "New Draft"), `GET /api/roster`,
+  `POST /api/roster/{add,remove}` (requires an active draft -- roster lives in
+  `DraftState`). `suggest` takes a `pool: bool` query param with the same
+  restrict-for-picks/bonus-for-bans asymmetry as the CLI's `--pool`.
 - `schemas.py` -- request/response pydantic models not already covered by
   `models.py` (`NewDraftRequest`, `BanRequest`, `PickRequest`,
-  `DraftStateResponse`/`DraftActionOut` + `build_state_response(sm, provider)`),
-  plus `resolve_champion_id(champion_id, champions)`/`UnknownChampionIdError` --
-  the exact-id equivalent of `cli._resolve_champion`'s fuzzy name matching.
-  `Recommendation`, `Champion`, and `Build` from `models.py` are reused directly
-  as response bodies elsewhere.
+  `DraftStateResponse`/`DraftActionOut` + `build_state_response(sm, provider)`,
+  `PoolAddRequest`/`PoolRemoveRequest`/`PoolClearRequest`/
+  `PoolImportOpggRequest`/`PoolResponse`, `RosterAddRequest`/
+  `RosterRemoveRequest`/`RosterResponse`), plus
+  `resolve_champion_id(champion_id, champions)`/`UnknownChampionIdError` -- the
+  exact-id equivalent of `cli._resolve_champion`'s fuzzy name matching. Pool
+  requests are id-based (matching `ban`/`pick`'s web convention -- resolved
+  through the champion picker), except `PoolImportOpggRequest`, which is
+  name-based since the whole point is importing names the web UI doesn't know
+  about yet. `Recommendation`, `Champion`, and `Build` from `models.py` are reused
+  directly as response bodies elsewhere.
 - `static/index.html` / `app.js` / `style.css` -- one page, zero build tooling
   (no npm/node/framework): a new-draft form, ban/pick board, champion picker
   (search + click, backed by `GET /api/champions`), a suggestions table with
-  Lookahead/Any-role toggles that mirror `dispatch.py`'s mutual-exclusion rules
-  client-side, and a build panel. Every mutating action re-fetches
+  Lookahead/Any-role/"Use my pool" toggles that mirror `dispatch.py`'s
+  mutual-exclusion rules client-side, a roster panel (ally/enemy player-name
+  lists), a champion-pool panel (per-player, per-role, plus an OP.GG-import
+  sub-form), and a build panel. Every mutating action re-fetches
   `GET /api/draft/state` and re-renders from scratch -- the server is always the
   source of truth, no separate client-side draft logic. The board always shows each
   side's 5 picks sorted into canonical role order rather than pick order (unlike
   the CLI's separate running `state` log, this is the board's only view), each
   annotated `(pick N)` with its overall draft-wide pick number -- the same
   role-sort-loses-pick-order tradeoff `cli._render_final_teams` handles, computed
-  client-side from the same `state.actions` order the server returns.
+  client-side from the same `state.actions` order the server returns. A ban-phase
+  candidate with the `"in enemy pool"` bonus term gets a visible badge next to its
+  name, not just buried breakdown text -- the "Use my pool" checkbox is enabled
+  during bans now too (unlike Lookahead/Any-role, which stay pick-only), since the
+  bonus (unlike a restriction) is meaningful there.
 
 **`tests/`** -- one file per module above (`test_shrinkage.py`, `test_draft_state.py`,
 `test_scoring.py`, `test_composition.py`, `test_exposure.py`, `test_lookahead.py`,
-`test_ban.py`, `test_priority.py`, `test_opgg_format.py`, `test_opgg_provider.py`),
-plus `test_e2e_cli.py` (full offline SOLOQ and TOURNAMENT drafts driven entirely
-through the CLI, no network access) and `test_e2e_web.py` (the same, driven through
-the web API via `fastapi.testclient.TestClient`, itself built on the already-approved
-`httpx`). The OP.GG tests use `httpx.MockTransport` with real captured server
-responses -- no live network calls anywhere in the test suite.
+`test_ban.py`, `test_priority.py`, `test_pool.py`, `test_opgg_format.py`,
+`test_opgg_provider.py`), plus `test_e2e_cli.py` (full offline SOLOQ and TOURNAMENT
+drafts driven entirely through the CLI, no network access) and `test_e2e_web.py` (the
+same, driven through the web API via `fastapi.testclient.TestClient`, itself built on
+the already-approved `httpx`). The OP.GG tests use `httpx.MockTransport` with real
+captured server responses -- no live network calls anywhere in the test suite.
+`test_pool.py` covers `models.ChampionPool`/`TeamRoster`/`consolidated_pool_ids`/
+`add_to_pool_registry` and `persistence`'s pool-registry functions in isolation;
+each `pool_ids`/`pool_ids_by_role`-consuming `search/*` module has its own extended
+test class instead of a shared one, since what "correct" means differs per module
+(hard restriction for `greedy.py`/`priority.py`/`lookahead.py`, bonus-only for
+`ban.py`) -- most notably `test_scoring.py`'s
+`test_pool_restriction_preserves_exposure_to_a_real_off_pool_counter`, a regression
+test for the `legal_ids`-vs-`candidate_ids` bug described above.
 
 **`data/`**
 

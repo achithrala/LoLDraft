@@ -34,14 +34,18 @@ from draftiq.models import (
     ActionType,
     Build,
     Champion,
+    ChampionPool,
     DraftMode,
     ProviderName,
     RankBracket,
     Recommendation,
     Role,
+    RosterSide,
     Side,
+    add_to_pool_registry,
 )
 from draftiq.providers.base import StatsProvider
+from draftiq.providers.opgg import OpggApiError, OpggProvider
 from draftiq.search.dispatch import SuggestRequestError, resolve_suggestion
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
@@ -249,6 +253,19 @@ def suggest(
             ),
         ),
     ] = False,
+    pool: Annotated[
+        bool,
+        typer.Option(
+            "--pool",
+            help=(
+                "Picks: restrict to the union of `draftiq roster`'s ally players' "
+                "champion pools for this role. Bans: add a bonus/highlight for "
+                "candidates in the enemy roster's pools instead -- the full ban "
+                "list is always shown, never narrowed. See `draftiq pool`/"
+                "`draftiq roster` to set these up."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Rank legal champions for the current turn: picks by win-rate value, bans by
     how much they deny the opponent."""
@@ -261,7 +278,7 @@ def suggest(
     action = sm.current_action_type()
 
     try:
-        recs, show_role = resolve_suggestion(sm, provider, role, top, lookahead, any_role)
+        recs, show_role = resolve_suggestion(sm, provider, role, top, lookahead, any_role, pool)
     except SuggestRequestError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from e
@@ -356,6 +373,210 @@ def _print_next_turn(sm: DraftStateMachine, provider: StatsProvider) -> None:
     else:
         next_side, next_action = sm.current_side().value, sm.current_action_type().value
         console.print(f"Next: [bold]{next_side} {next_action}[/bold]")
+
+
+pool_app = typer.Typer(help="Manage named players' champion pools (used by `suggest --pool`).")
+app.add_typer(pool_app, name="pool")
+
+roster_app = typer.Typer(
+    help="Manage this draft's ally/enemy team membership (used by `suggest --pool`)."
+)
+app.add_typer(roster_app, name="roster")
+
+
+def _pool_add_names(
+    registry: dict[str, ChampionPool],
+    player: str,
+    role: Role,
+    names: list[str],
+    registry_champions: list[Champion],
+) -> list[str]:
+    """Fuzzy-resolves `names` (same matching as `ban`/`pick`) then delegates to
+    `models.add_to_pool_registry` for the actual append/dedupe. Returns the
+    canonical names actually added."""
+    champs = [_resolve_champion(name, registry_champions) for name in names]
+    added = add_to_pool_registry(registry, player, role, champs)
+    return [c.name for c in added]
+
+
+@pool_app.command("add")
+def pool_add(
+    player: Annotated[str, typer.Argument(help="Player name (yourself or someone else).")],
+    role: Annotated[Role, typer.Argument(help="Role this pool applies to.")],
+    champions: Annotated[list[str], typer.Argument(help="Champion name(s) to add.")],
+) -> None:
+    """Add champions to a named player's pool for ROLE."""
+    provider = persistence.get_active_or_default_provider()
+    registry = persistence.load_pool_registry()
+    added = _pool_add_names(registry, player, role, champions, provider.get_champions())
+    persistence.save_pool_registry(registry)
+    if added:
+        console.print(f"Added to {player}'s {role.value} pool: {', '.join(added)}")
+    else:
+        console.print("[yellow]No new champions added (already in the pool).[/yellow]")
+
+
+@pool_app.command("remove")
+def pool_remove(
+    player: Annotated[str, typer.Argument(help="Player name.")],
+    role: Annotated[Role, typer.Argument(help="Role to remove champions from.")],
+    champions: Annotated[list[str], typer.Argument(help="Champion name(s) to remove.")],
+) -> None:
+    """Remove champions from a named player's pool for ROLE."""
+    provider = persistence.get_active_or_default_provider()
+    registry_champions = provider.get_champions()
+    registry = persistence.load_pool_registry()
+    pool = registry.get(player)
+    removed = []
+    for name in champions:
+        champ = _resolve_champion(name, registry_champions)
+        if pool is not None and role in pool.by_role:
+            before = pool.by_role[role]
+            after = [n for n in before if n.lower() != champ.name.lower()]
+            if len(after) != len(before):
+                removed.append(champ.name)
+            pool.by_role[role] = after
+    if removed:
+        persistence.save_pool_registry(registry)
+        console.print(f"Removed from {player}'s {role.value} pool: {', '.join(removed)}")
+    else:
+        console.print("[yellow]None of those champions were in the pool.[/yellow]")
+
+
+@pool_app.command("show")
+def pool_show(
+    player: Annotated[
+        str | None, typer.Argument(help="Player name. Omit to show every known player.")
+    ] = None,
+    role: Annotated[Role | None, typer.Argument(help="Role. Omit to show every role.")] = None,
+) -> None:
+    """Print one or every named player's champion pool."""
+    registry = persistence.load_pool_registry()
+    if not registry:
+        console.print("[yellow]No pools defined yet.[/yellow]")
+        return
+    players = [player] if player is not None else sorted(registry.keys())
+    for p in players:
+        pool = registry.get(p)
+        if pool is None:
+            console.print(f"[yellow]No pool for {p}.[/yellow]")
+            continue
+        console.print(f"\n[bold]{p}[/bold]:")
+        for r in [role] if role is not None else list(Role):
+            names = pool.by_role.get(r, [])
+            console.print(f"  {r.value}: {', '.join(names) if names else '(empty)'}")
+
+
+@pool_app.command("clear")
+def pool_clear(
+    player: Annotated[str, typer.Argument(help="Player name.")],
+    role: Annotated[Role | None, typer.Argument(help="Role to clear.")] = None,
+    all_roles: Annotated[
+        bool, typer.Option("--all", help="Clear every role for this player.")
+    ] = False,
+) -> None:
+    """Clear a named player's pool for one role, or entirely with --all."""
+    if (role is None) == (not all_roles):
+        console.print("[red]Specify exactly one of ROLE or --all.[/red]")
+        raise typer.Exit(1)
+    registry = persistence.load_pool_registry()
+    if player not in registry:
+        console.print(f"[yellow]No pool for {player}.[/yellow]")
+        raise typer.Exit(1)
+    if all_roles:
+        registry[player] = ChampionPool()
+        persistence.save_pool_registry(registry)
+        console.print(f"Cleared {player}'s pool.")
+    else:
+        assert role is not None
+        registry[player].by_role.pop(role, None)
+        persistence.save_pool_registry(registry)
+        console.print(f"Cleared {player}'s {role.value} pool.")
+
+
+@pool_app.command("import-opgg")
+def pool_import_opgg(
+    player: Annotated[str, typer.Argument(help="Player name to import into.")],
+    role: Annotated[Role, typer.Argument(help="Role to import these champions into.")],
+    riot_id: Annotated[str, typer.Argument(help='Riot ID, e.g. "Faker#KR1".')],
+    region: Annotated[str, typer.Option("--region", help="Server region code, e.g. KR, NA, EUW.")],
+    top: Annotated[
+        int, typer.Option("--top", help="How many most-played champions to import.")
+    ] = 10,
+) -> None:
+    """Import a real summoner's most-played champions (via live OP.GG data) into
+    PLAYER's pool for ROLE. OP.GG exposes no per-champion role/position data for a
+    summoner's champion history, so you tell it which role these go into -- always
+    uses OP.GG regardless of the active draft's provider, since this is inherently
+    real-data-only."""
+    if "#" not in riot_id:
+        console.print('[red]Riot ID must be in the form Name#Tag, e.g. "Faker#KR1".[/red]')
+        raise typer.Exit(1)
+    game_name, tag_line = riot_id.rsplit("#", 1)
+    provider = OpggProvider()
+    try:
+        names = provider.get_summoner_champion_pool(game_name, tag_line, region, limit=top)
+    except OpggApiError as e:
+        console.print(f"[red]Could not fetch {riot_id}'s champion pool:[/red] {e}")
+        raise typer.Exit(1) from e
+    if not names:
+        console.print(f"[yellow]No champion history found for {riot_id}.[/yellow]")
+        raise typer.Exit(1)
+
+    registry = persistence.load_pool_registry()
+    added = _pool_add_names(registry, player, role, names, provider.get_champions())
+    persistence.save_pool_registry(registry)
+    console.print(
+        f"Imported into {player}'s {role.value} pool from {riot_id}: "
+        f"{', '.join(added) if added else '(no new champions)'}"
+    )
+
+
+def _roster_list(sm: DraftStateMachine, side: RosterSide) -> list[str]:
+    return sm.state.roster.ally if side is RosterSide.ALLY else sm.state.roster.enemy
+
+
+@roster_app.command("add")
+def roster_add(
+    side: Annotated[RosterSide, typer.Argument(help="Which team this player is on.")],
+    player: Annotated[str, typer.Argument(help="Player name (matches a pool name, if any).")],
+) -> None:
+    """Add a named player to this draft's ally or enemy roster -- team membership
+    only, no role assignment: pick order/priority means who ends up playing which
+    role isn't knowable in advance. `suggest --pool` consults the union of a side's
+    players' pools for whichever role is relevant instead of a fixed mapping."""
+    sm = _load_state_machine()
+    names = _roster_list(sm, side)
+    if player in names:
+        console.print(f"[yellow]{player} is already on {side.value}.[/yellow]")
+        return
+    names.append(player)
+    _save_state_machine(sm)
+    console.print(f"Added {player} to {side.value}.")
+
+
+@roster_app.command("remove")
+def roster_remove(
+    side: Annotated[RosterSide, typer.Argument(help="Which team this player is on.")],
+    player: Annotated[str, typer.Argument(help="Player name to remove.")],
+) -> None:
+    """Remove a named player from this draft's ally or enemy roster."""
+    sm = _load_state_machine()
+    names = _roster_list(sm, side)
+    if player not in names:
+        console.print(f"[yellow]{player} is not on {side.value}.[/yellow]")
+        return
+    names.remove(player)
+    _save_state_machine(sm)
+    console.print(f"Removed {player} from {side.value}.")
+
+
+@roster_app.command("show")
+def roster_show() -> None:
+    """Print this draft's ally/enemy team membership."""
+    sm = _load_state_machine()
+    console.print(f"Ally: {', '.join(sm.state.roster.ally) or '(none)'}")
+    console.print(f"Enemy: {', '.join(sm.state.roster.enemy) or '(none)'}")
 
 
 @app.command()

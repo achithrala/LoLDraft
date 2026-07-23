@@ -20,6 +20,13 @@ Deliberately not wired into the CLI's default `suggest` path: it's `lookahead_wi
 nested `greedy.suggest()` calls (one full scoring pass per opponent role checked),
 which is real added latency, especially against a network-bound provider. It's
 opt-in via `draftiq suggest --lookahead`.
+
+`pool_ids`, if given, is passed only into ply 1's `greedy.suggest(...)` call --
+`_best_opponent_response_score`'s ply-2 calls deliberately take no `pool_ids`
+parameter at all, since that's the opponent's best reply, and the opponent doesn't
+share your team's champion pool. Keep it that way; don't thread `pool_ids` through
+"for consistency" -- that would silently restrict the opponent simulation to your
+own pool, which is nonsensical.
 """
 
 from __future__ import annotations
@@ -65,13 +72,16 @@ def suggest_with_lookahead(
     lookahead_weight: float = DEFAULT_LOOKAHEAD_WEIGHT,
     k: float = DEFAULT_K,
     k_m: float = DEFAULT_K_MATCHUP,
+    pool_ids: set[int] | None = None,
 ) -> list[Recommendation]:
     """Ply 1: the normal greedy ranking, widened to `lookahead_width` candidates.
     Ply 2: for each of those, simulate the pick and subtract
     `lookahead_weight * opponent's best response score` from its total. Re-sorts
     and returns the top `top_n`.
     """
-    ply1 = greedy.suggest(sm, provider, role, top_n=lookahead_width, k=k, k_m=k_m)
+    ply1 = greedy.suggest(
+        sm, provider, role, top_n=lookahead_width, k=k, k_m=k_m, pool_ids=pool_ids
+    )
 
     adjusted: list[Recommendation] = []
     for rec in ply1:

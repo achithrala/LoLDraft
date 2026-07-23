@@ -200,3 +200,115 @@ def test_index_serves_html(client: TestClient) -> None:
     resp = client.get("/")
     assert resp.status_code == 200
     assert "draftiq" in resp.text
+
+
+def _pool_champion_ids_by_name(client: TestClient) -> dict[str, int]:
+    resp = client.get("/api/pool/champions")
+    assert resp.status_code == 200, resp.text
+    return {c["name"]: c["champion_id"] for c in resp.json()}
+
+
+def test_pool_champions_works_before_any_draft(client: TestClient) -> None:
+    resp = client.get("/api/pool/champions")
+    assert resp.status_code == 200
+    assert resp.json()
+
+
+def test_pool_add_remove_clear(client: TestClient) -> None:
+    by_name = _pool_champion_ids_by_name(client)
+
+    resp = client.post(
+        "/api/pool/add",
+        json={"player": "Me", "role": "top", "champion_id": by_name["Aatrox"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["registry"]["Me"]["by_role"]["top"] == ["Aatrox"]
+
+    resp = client.get("/api/pool")
+    assert resp.json()["registry"]["Me"]["by_role"]["top"] == ["Aatrox"]
+
+    resp = client.post(
+        "/api/pool/remove",
+        json={"player": "Me", "role": "top", "champion_id": by_name["Aatrox"]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["registry"]["Me"]["by_role"].get("top", []) == []
+
+    client.post(
+        "/api/pool/add",
+        json={"player": "Me", "role": "top", "champion_id": by_name["Darius"]},
+    )
+    resp = client.post("/api/pool/clear", json={"player": "Me"})
+    assert resp.status_code == 200
+    assert "Me" not in resp.json()["registry"]
+
+
+def test_pool_add_unknown_champion_id_returns_400(client: TestClient) -> None:
+    resp = client.post("/api/pool/add", json={"player": "Me", "role": "top", "champion_id": 999999})
+    assert resp.status_code == 400
+
+
+def test_roster_requires_active_draft(client: TestClient) -> None:
+    resp = client.get("/api/roster")
+    assert resp.status_code == 404
+
+
+def test_roster_add_show_remove(client: TestClient) -> None:
+    client.post("/api/draft/new", json={})
+
+    resp = client.post("/api/roster/add", json={"side": "ally", "player": "Me"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ally": ["Me"], "enemy": []}
+
+    resp = client.post("/api/roster/add", json={"side": "enemy", "player": "EnemyMid"})
+    assert resp.json() == {"ally": ["Me"], "enemy": ["EnemyMid"]}
+
+    resp = client.get("/api/roster")
+    assert resp.json() == {"ally": ["Me"], "enemy": ["EnemyMid"]}
+
+    resp = client.post("/api/roster/remove", json={"side": "enemy", "player": "EnemyMid"})
+    assert resp.json() == {"ally": ["Me"], "enemy": []}
+
+
+def test_suggest_pool_restricts_pick_candidates(client: TestClient) -> None:
+    pool_champs = _pool_champion_ids_by_name(client)
+    client.post(
+        "/api/pool/add",
+        json={"player": "Me", "role": "top", "champion_id": pool_champs["Aatrox"]},
+    )
+    client.post("/api/draft/new", json={})
+    client.post("/api/roster/add", json={"side": "ally", "player": "Me"})
+    by_name = _champion_ids_by_name(client)
+    for champ in BANS:
+        client.post("/api/draft/ban", json={"champion_id": by_name[champ]})
+
+    resp = client.get("/api/draft/suggest", params={"role": "top", "pool": "true"})
+    assert resp.status_code == 200
+    recs = resp.json()
+    assert {r["champion_id"] for r in recs} == {pool_champs["Aatrox"]}
+
+
+def test_suggest_pool_adds_bonus_during_ban_without_shrinking_list(client: TestClient) -> None:
+    pool_champs = _pool_champion_ids_by_name(client)
+    client.post(
+        "/api/pool/add",
+        json={"player": "EnemyMid", "role": "mid", "champion_id": pool_champs["Ahri"]},
+    )
+    client.post("/api/draft/new", json={})
+    client.post("/api/roster/add", json={"side": "enemy", "player": "EnemyMid"})
+
+    unrestricted = client.get("/api/draft/suggest", params={"top": 20}).json()
+    with_pool = client.get("/api/draft/suggest", params={"top": 20, "pool": "true"}).json()
+
+    assert len(with_pool) == len(unrestricted)  # bonus, not a restriction
+    ahri_id = pool_champs["Ahri"]
+    ahri_with_pool = next(r for r in with_pool if r["champion_id"] == ahri_id)
+    assert any(t["label"] == "in enemy pool" for t in ahri_with_pool["terms"])
+    ahri_unrestricted = next(r for r in unrestricted if r["champion_id"] == ahri_id)
+    assert not any(t["label"] == "in enemy pool" for t in ahri_unrestricted["terms"])
+
+
+def test_suggest_pool_during_ban_is_no_longer_rejected(client: TestClient) -> None:
+    client.post("/api/draft/new", json={})
+    resp = client.get("/api/draft/suggest", params={"pool": "true"})
+    assert resp.status_code == 200

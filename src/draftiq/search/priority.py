@@ -50,6 +50,16 @@ No new scoring math -- `score_candidate` is reused unchanged, exactly like
 `search/ban.py` does; both bonuses are small additive tiebreakers on top of it, on
 the same scale as `search/ban.py`'s pick-rate weighting and `stats/composition.py`'s
 fit penalties.
+
+`pool_ids_by_role`, if given, is an *already-resolved* `{role: allowed_ids_or_None}`
+map (see `models.consolidated_pool_ids`) restricting which roles a candidate is even
+considered for -- per-role, not a single flat filter, since a champion pooled for
+"top" has no business being scored for "jungle" just because they're pooled
+somewhere. Ineligible roles are dropped *before* calling `score_candidate` (not
+scored then discarded) to avoid paying for a network round-trip on a role that will
+never be used. A candidate eligible in zero of their unfilled roles is skipped
+entirely -- this is what keeps the later `max(rankable_roles.values(), ...)` call
+from ever seeing an empty sequence.
 """
 
 from __future__ import annotations
@@ -82,6 +92,7 @@ def suggest_priority(
     top_n: int = 5,
     k: float = DEFAULT_K,
     k_m: float = DEFAULT_K_MATCHUP,
+    pool_ids_by_role: dict[Role, set[int] | None] | None = None,
 ) -> list[Recommendation]:
     if sm.is_complete():
         raise ValueError("Cannot suggest a pick: the draft is already complete.")
@@ -121,6 +132,14 @@ def suggest_priority(
     best_by_champion: dict[int, Recommendation] = {}
     for champ_id in legal_ids:
         champion = champion_by_id[champ_id]
+        eligible_roles = []
+        for role in unfilled_roles:
+            allowed = pool_ids_by_role.get(role) if pool_ids_by_role is not None else None
+            if allowed is None or champ_id in allowed:
+                eligible_roles.append(role)
+        if not eligible_roles:
+            continue
+
         rec_by_role: dict[Role, Recommendation] = {
             role: score_candidate(
                 champion=champion,
@@ -137,7 +156,7 @@ def suggest_priority(
                 remaining_enemy_ids=legal_ids,
                 remaining_enemy_picks=remaining_enemy_picks,
             )
-            for role in unfilled_roles
+            for role in eligible_roles
         }
 
         # Only roles with actual sample data can establish "this champion is good

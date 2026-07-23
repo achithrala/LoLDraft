@@ -176,8 +176,100 @@ class DraftAction(BaseModel):
     role: Role | None = None  # required for picks, absent for bans
 
 
+class ChampionPool(BaseModel):
+    """One named player's per-role champion pool -- "champions this person actually
+    plays." Stored by champion name (`Champion.name`), never `champion_id`:
+    `ManualCSVProvider`'s ids are a local synthetic numbering while `OpggProvider`'s
+    are real Data Dragon ids, so only names are stable across providers. A pool must
+    survive switching `--provider manual`/`--provider opgg`."""
+
+    by_role: dict[Role, list[str]] = Field(default_factory=dict)
+
+    def resolve_ids(self, role: Role, champions: list[Champion]) -> set[int] | None:
+        """`None` if this player has no pool entry for `role` at all -- callers must
+        treat that as "no data, don't restrict or bonus," never as an empty
+        restriction. An empty `set()` is a different, real answer: a pool was
+        defined for this role, but none of its names resolve against `champions`
+        (e.g. a stale name, or `champions` came from a provider whose roster
+        doesn't include it)."""
+        names = self.by_role.get(role)
+        if not names:
+            return None
+        lowered = {n.lower() for n in names}
+        return {c.champion_id for c in champions if c.name.lower() in lowered}
+
+
+class RosterSide(StrEnum):
+    """Which team a named player is on for a given draft -- relative to the user
+    (`ally`/`enemy`), not `Side.BLUE`/`Side.RED` (which side is blue/red is a
+    per-draft coin flip, not a stable fact about who's on your team)."""
+
+    ALLY = "ally"
+    ENEMY = "enemy"
+
+
+class TeamRoster(BaseModel):
+    """Team membership for one draft -- which named players (see `ChampionPool`,
+    keyed the same way in the pool registry) are on which side. Names only, not
+    role assignments: real pick order/priority means who ends up playing which
+    role isn't knowable in advance, especially for the enemy team. Suggestions
+    consult the *union* of a side's players' pools for the relevant role instead
+    (see `consolidated_pool_ids`) rather than trying to guess a specific
+    player-to-role mapping."""
+
+    ally: list[str] = Field(default_factory=list)
+    enemy: list[str] = Field(default_factory=list)
+
+
+def consolidated_pool_ids(
+    registry: dict[str, ChampionPool],
+    player_names: list[str],
+    role: Role,
+    champions: list[Champion],
+) -> set[int] | None:
+    """Union of every named player's resolved pool for `role`. `None` only if
+    *none* of `player_names` have any pool data for this role at all -- the
+    caller must not restrict or bonus in that case. An empty `set()` is a real,
+    different answer: at least one player has a pool entry for this role, but
+    none of the names resolve against `champions`."""
+    ids: set[int] = set()
+    any_defined = False
+    for name in player_names:
+        pool = registry.get(name)
+        if pool is None:
+            continue
+        resolved = pool.resolve_ids(role, champions)
+        if resolved is not None:
+            any_defined = True
+            ids |= resolved
+    return ids if any_defined else None
+
+
+def add_to_pool_registry(
+    registry: dict[str, ChampionPool],
+    player: str,
+    role: Role,
+    champions: list[Champion],
+) -> list[Champion]:
+    """Appends `champions` (already resolved -- by fuzzy CLI name match or exact web
+    `champion_id`, callers differ, this doesn't care) into `registry[player]`'s pool
+    for `role`, deduped case-insensitively by name. Returns the ones actually added
+    (a champion already present contributes nothing). Mutates `registry` in place;
+    the caller still owns persisting it via `persistence.save_pool_registry`."""
+    pool = registry.setdefault(player, ChampionPool())
+    existing = {n.lower() for n in pool.by_role.get(role, [])}
+    added = []
+    for champ in champions:
+        if champ.name.lower() not in existing:
+            pool.by_role.setdefault(role, []).append(champ.name)
+            existing.add(champ.name.lower())
+            added.append(champ)
+    return added
+
+
 class DraftState(BaseModel):
     mode: DraftMode
     rank: RankBracket = RankBracket.ALL
     provider: ProviderName = ProviderName.MANUAL
     actions: list[DraftAction] = Field(default_factory=list)
+    roster: TeamRoster = Field(default_factory=TeamRoster)

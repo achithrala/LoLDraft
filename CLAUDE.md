@@ -24,8 +24,11 @@ during a ban step); build display (`draftiq build CHAMPION --role ROLE
 [--opponent CHAMPION]`).
 
 **Phase 3: in progress.** Local web UI complete (`web/app.py` + `web/static/`, launched
-via `draftiq serve`). LLM-generated tips and per-player champion pool weighting not
-started.
+via `draftiq serve`). Champion pool weighting complete, but expanded well beyond the
+spec's "the user's own pool" -- named pools for any player (teammates, enemy players
+in a Clash draft), team-membership rosters, and OP.GG-summoner import (`draftiq pool`/
+`draftiq roster`, `draftiq suggest --pool`; see "Phase 3: champion pool weighting"
+below for the full design). LLM-generated tips not started.
 
 **Post-Phase 2 addition: champion-priority / flex-pick suggestions.** Not in the
 original spec. `search/priority.py` (`suggest_priority`, wired into the CLI as
@@ -190,6 +193,101 @@ bonus now require `n_games > 0` in a role before it can count at all.
   independently-calibrated pick-rate weighting (denial value / contest risk are
   different questions from "is this a trustworthy suggestion"), and
   `score_candidate` itself remains untouched -- still exactly the spec's 5 terms.
+
+## Phase 3: champion pool weighting (read before touching `pool`/`roster`
+commands, `models.ChampionPool`/`TeamRoster`/`consolidated_pool_ids`, or any
+`pool_ids`/`pool_ids_by_role` parameter in `search/`)
+
+- **Scope grew well past the spec during design.** The spec says "per-player
+  champion pool weighting (recommendations restricted to champions the user
+  actually plays)" -- singular user, singular pool. Two rounds of user
+  clarification expanded this to: named pools for *any* player (teammates in a
+  premade lobby, enemy players in a Clash draft), and a way to import a pool from
+  a real OP.GG summoner. Both are real, confirmed requirements, not scope creep on
+  my part -- documented here so the size of what got built doesn't look
+  unexplained next to the one-line spec bullet.
+
+- **No player-to-role assignment, by explicit design.** The obvious-seeming design
+  (assign "this teammate plays top") was proposed and rejected: pick order/priority
+  means who ends up in which slot isn't knowable in advance, especially for the
+  enemy team. Instead, `models.TeamRoster` tracks only **team membership** --
+  `ally`/`enemy` lists of player names, no roles -- and every suggestion
+  **unions** all of that side's players' pools for whatever role is actually
+  relevant at the moment (`models.consolidated_pool_ids`), recomputed fresh on
+  every `suggest` call rather than fixed at roster-setup time.
+
+- **Pools and rosters live in different files with different lifetimes, on
+  purpose.** `ChampionPool`s are reusable across drafts (a teammate's champion
+  pool doesn't change between games), keyed by player name in a registry
+  (`.draftiq/pools.json`, `persistence.load_pool_registry`/`save_pool_registry`).
+  `TeamRoster` is draft-specific (who's actually in *this* game changes every
+  draft) and lives inside `DraftState` itself, resetting automatically on every
+  `draftiq new`.
+
+- **Storage is by champion name, never `champion_id`.** `ManualCSVProvider` uses a
+  local synthetic numbering; `OpggProvider` uses real Data Dragon ids. Only names
+  are stable across both, so a pool set up under one provider still resolves
+  correctly after switching -- confirmed live: set a pool while on `manual`, then
+  started an `opgg` draft and had `suggest --pool` correctly restrict to the same
+  champion by name, now under OP.GG's real ids (129874 -> 241008-scale numbers in
+  the `n games` column instead of the manual dataset's thousands -- unmistakably
+  real data, not a coincidence of small numbers matching).
+
+- **`ChampionPool.resolve_ids`/`consolidated_pool_ids` return `set[int] | None`,
+  and the two are never interchangeable.** `None` means "no pool data at all for
+  this role -- don't restrict or bonus." An empty `set()` means "pool data
+  exists, but nothing in it resolves against this provider's roster -- restrict
+  to nothing." Collapsing this distinction anywhere (e.g. treating a missing role
+  as an empty set) would silently turn "you haven't set this up yet" into "you
+  play nothing here," which is wrong. Every `search/*` function that consumes a
+  resolved pool preserves this distinction explicitly; `tests/test_pool.py` has a
+  dedicated case for each side of it.
+
+- **`search/greedy.py`'s `legal_ids` vs `candidate_ids` split is the one place
+  this bites for real.** `legal_ids` (the true undrafted roster) is also passed
+  into every `score_candidate` call as `remaining_enemy_ids`, which feeds
+  `stats/exposure.py`'s "what real counter could the enemy still draft"
+  calculation -- a question about the whole board, never about my own pool.
+  Naively reassigning `legal_ids` to the pool-restricted set (the obvious first
+  attempt) would silently make counterpick exposure ask "could something in my
+  own pool counter this" instead -- recommendations keep returning, scores look
+  plausible, and a real off-pool counter the enemy could still draft just never
+  gets flagged. Fixed with a second variable (`candidate_ids`) that drives the
+  scoring loop and the popularity term, while `legal_ids` keeps feeding
+  `prefetch_for_suggest` and `remaining_enemy_ids` unrestricted. There's a
+  dedicated regression test for this in `tests/test_scoring.py`
+  (`test_pool_restriction_preserves_exposure_to_a_real_off_pool_counter`) --
+  this is exactly the kind of bug that returns a plausible-looking wrong answer
+  rather than an error, so it needs a test that would actually have caught it,
+  not just a smoke test.
+
+- **Picks restrict; bans only bonus/highlight -- confirmed, not symmetric by
+  accident.** For a pick (or `--any-role`), `--pool` restricts the candidate set
+  to the union of the *ally* roster's pools -- matches the spec's literal
+  "restricted to." For a ban, `--pool` instead adds a bonus/highlight
+  (`search/ban.py`'s `POOL_BONUS = 0.05`, labeled `"in enemy pool"`) for
+  candidates in the union of the *enemy* roster's pools, but the full ban list is
+  **never** narrowed -- confirmed explicitly: *"bonus/highlight only... you're
+  never prevented from seeing... any other ban."* This reversed an earlier,
+  simpler design (`--pool` rejected outright during bans) once named enemy pools
+  made "deny something a specific enemy player actually plays" a real,
+  higher-value signal than generic pick-rate popularity.
+
+- **OP.GG has no role/position data for a summoner's champion history --
+  confirmed live, not assumed.** `providers/opgg.py`'s `get_summoner_champion_pool`
+  (`lol_get_summoner_profile`'s `most_champions.champion_stats`) returns
+  `champion_name`/`play`/`win`/`id` per champion, sorted by play count -- nothing
+  else. A live check against a real summoner (`Faker#KR1`) showed their top 5 by
+  play count spanning mid/jungle/top, exactly as a real player's history would.
+  `draftiq pool import-opgg <player> <role> <riot_id>` therefore always requires
+  an explicit `role` from the caller -- there's no data-driven way to infer it.
+
+- **`GET /api/pool/champions` exists specifically so the web pool panel works
+  before any draft has started** -- `GET /api/champions` requires an active draft
+  (a locked-in, tested contract) but setting up your pool before ever clicking
+  "New Draft" is the natural first use of this feature. Backed by
+  `persistence.get_active_or_default_provider()`, the same bootstrap-to-Manual
+  fallback the CLI's `pool` commands use.
 
 ## OP.GG schema notes (read before touching `providers/opgg.py`)
 

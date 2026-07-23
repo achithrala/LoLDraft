@@ -5,7 +5,7 @@ import pytest
 from draftiq.draft.state import DraftStateMachine
 from draftiq.models import DraftMode, RankBracket, Role
 from draftiq.providers.manual import ManualCSVProvider
-from draftiq.search.ban import suggest_bans
+from draftiq.search.ban import POOL_BONUS, suggest_bans
 from draftiq.search.greedy import suggest as greedy_suggest
 from draftiq.stats.scoring import score_candidate
 from draftiq.stats.shrinkage import compute_role_average
@@ -105,3 +105,62 @@ class TestSuggestBans:
             champ_id += 1
         with pytest.raises(ValueError, match="already complete"):
             suggest_bans(sm, _provider())
+
+
+class TestSuggestBansPool:
+    """`pool_ids_by_role` is a bonus/highlight, not a restriction (unlike every
+    other pool_ids*/pool_ids_by_role parameter in search/) -- see ban.py's module
+    docstring: the full ban list is always shown, never narrowed to the enemy
+    roster's known pool."""
+
+    def test_in_pool_candidate_gets_bonus_term(self) -> None:
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        provider = _provider()
+        without = {r.champion_id: r for r in suggest_bans(sm, provider, top_n=20)}
+        with_pool = {
+            r.champion_id: r
+            for r in suggest_bans(sm, provider, top_n=20, pool_ids_by_role={Role.TOP: {4}})
+        }
+        assert not any(t.label == "in enemy pool" for t in without[4].terms)
+        pool_term = next(t for t in with_pool[4].terms if t.label == "in enemy pool")
+        assert pool_term.value == pytest.approx(POOL_BONUS)
+        assert with_pool[4].total_score == pytest.approx(without[4].total_score + POOL_BONUS)
+
+    def test_bonus_does_not_shrink_the_candidate_list(self) -> None:
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        provider = _provider()
+        without = suggest_bans(sm, provider, top_n=20)
+        with_pool = suggest_bans(sm, provider, top_n=20, pool_ids_by_role={Role.TOP: {4}})
+        assert {r.champion_id for r in without} == {r.champion_id for r in with_pool}
+
+    def test_out_of_pool_candidate_gets_no_bonus(self) -> None:
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        provider = _provider()
+        recs = {
+            r.champion_id: r
+            for r in suggest_bans(sm, provider, top_n=20, pool_ids_by_role={Role.TOP: {4}})
+        }
+        # Aatrox (id=1) is a real top laner but not in this pool set.
+        assert not any(t.label == "in enemy pool" for t in recs[1].terms)
+
+    def test_multiple_ids_in_resolved_set_all_get_the_bonus(self) -> None:
+        """The resolved set here stands in for a union across several enemy
+        roster players (see models.consolidated_pool_ids) -- ban.py itself just
+        needs to credit every id present, not only one."""
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        provider = _provider()
+        recs = {
+            r.champion_id: r
+            for r in suggest_bans(sm, provider, top_n=20, pool_ids_by_role={Role.TOP: {1, 4}})
+        }
+        assert any(t.label == "in enemy pool" for t in recs[1].terms)
+        assert any(t.label == "in enemy pool" for t in recs[4].terms)
+
+    def test_none_for_a_role_is_unrestricted_for_that_role(self) -> None:
+        """A `{role: None}` entry (no pool data for that role) must behave
+        identically to that role not being in the dict at all."""
+        sm = DraftStateMachine.new(DraftMode.SOLOQ)
+        provider = _provider()
+        without_param = suggest_bans(sm, provider, top_n=20)
+        with_none = suggest_bans(sm, provider, top_n=20, pool_ids_by_role={Role.TOP: None})
+        assert [r.champion_id for r in without_param] == [r.champion_id for r in with_none]

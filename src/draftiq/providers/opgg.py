@@ -403,6 +403,34 @@ class OpggProvider:
             source=self._source,
         )
 
+    def get_summoner_champion_pool(
+        self, game_name: str, tag_line: str, region: str, limit: int = 10
+    ) -> list[str]:
+        """Champion names from a real summoner's most-played champions
+        (`lol_get_summoner_profile`'s `most_champions.champion_stats`), sorted by
+        play count descending, capped at `limit`. Confirmed live: OP.GG exposes no
+        role/position breakdown for this data at all -- a real player's top
+        champions by play count routinely span every role -- so callers must decide
+        which role to apply the result to (see `draftiq pool import-opgg`). Not part
+        of `StatsProvider`: `ManualCSVProvider` has no concept of a real summoner,
+        same reasoning as `prefetch_for_suggest` being OP.GG-only. Not cached -- a
+        one-shot import command, not part of the hot `suggest()` path."""
+        text = self._mcp.call_tool(
+            "lol_get_summoner_profile",
+            {
+                "game_name": game_name,
+                "tag_line": tag_line,
+                "region": region,
+                "desired_output_fields": [
+                    "data.summoner.most_champions.champion_stats[].{champion_name,play}"
+                ],
+            },
+        )
+        parsed = opgg_format.parse(text)
+        stats = parsed["data"]["summoner"]["most_champions"]["champion_stats"]
+        stats.sort(key=lambda s: s["play"], reverse=True)
+        return [s["champion_name"] for s in stats[:limit]]
+
     def prefetch_for_suggest(
         self,
         champion_ids: Iterable[int],

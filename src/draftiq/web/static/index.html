@@ -70,11 +70,65 @@
         </label>
         <label><input type="checkbox" id="lookahead-toggle" /> Lookahead</label>
         <label><input type="checkbox" id="any-role-toggle" /> Any role</label>
+        <label><input type="checkbox" id="pool-toggle" /> Use my pool</label>
       </div>
       <table id="suggestions-table">
         <thead></thead>
         <tbody></tbody>
       </table>
+    </section>
+
+    <section id="roster-panel">
+      <h2>Roster</h2>
+      <p class="hint">
+        Named players on each side (see the Pools panel below). Team membership
+        only, not role assignments -- suggestions consult the union of a side's
+        players' pools for whichever role is relevant.
+      </p>
+      <div class="board-columns">
+        <div class="side">
+          <h3>Ally</h3>
+          <ul id="roster-ally-list"></ul>
+          <form id="roster-ally-form" class="inline-form">
+            <input type="text" placeholder="Player name" required />
+            <button type="submit">Add</button>
+          </form>
+        </div>
+        <div class="side">
+          <h3>Enemy</h3>
+          <ul id="roster-enemy-list"></ul>
+          <form id="roster-enemy-form" class="inline-form">
+            <input type="text" placeholder="Player name" required />
+            <button type="submit">Add</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section id="pool-panel">
+      <h2>Champion Pools</h2>
+      <p class="hint">
+        Champions each named player actually plays, per role. Referenced by name
+        from the Roster panel above.
+      </p>
+      <div id="pool-list"></div>
+      <form id="pool-add-form" class="inline-form">
+        <input id="pool-player" type="text" placeholder="Player name" required />
+        <select id="pool-role"></select>
+        <select id="pool-champion"></select>
+        <button type="submit">Add</button>
+      </form>
+      <details id="pool-import-opgg">
+        <summary>Import from OP.GG</summary>
+        <form id="pool-import-form" class="inline-form">
+          <input id="import-player" type="text" placeholder="Player name" required />
+          <select id="import-role"></select>
+          <input id="import-riot-id" type="text" placeholder="Riot ID, e.g. Faker#KR1" required />
+          <input id="import-region" type="text" placeholder="Region, e.g. KR" required />
+          <input id="import-top" type="number" min="1" max="20" value="10" />
+          <button type="submit">Import</button>
+        </form>
+      </details>
     </section>
 
     <section id="build-panel">

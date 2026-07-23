@@ -34,6 +34,18 @@ with a 1-2 percentage point win-rate gap). Normalizing by the pool's own max pic
 makes one constant behave consistently regardless of how spread out a given dataset's
 pick rates happen to be: the single most-picked legal champion in the role always gets
 the full `POPULARITY_WEIGHT_SCALE`, everyone else scales down proportionally.
+
+`pool_ids`, if given, is an *already-resolved* set of allowed champion ids for this
+role (see `models.consolidated_pool_ids` -- callers resolve it once, this function
+doesn't know or care whether it came from one player or a union of several). It
+restricts which candidates get scored/returned, but must NOT replace `legal_ids`
+itself: `legal_ids` is also passed to every `score_candidate` call as
+`remaining_enemy_ids`, which feeds `stats/exposure.py`'s "what real counter could the
+enemy still draft" calculation -- that question is about the whole undrafted roster,
+never about my own pool. A second variable, `candidate_ids`, carries the
+pool-restricted set instead, so a pool-restricted `suggest()` call still correctly
+flags a real off-pool counter the enemy could grab, rather than silently checking
+counters only within the pool.
 """
 
 from __future__ import annotations
@@ -59,6 +71,7 @@ def suggest(
     top_n: int = 5,
     k: float = DEFAULT_K,
     k_m: float = DEFAULT_K_MATCHUP,
+    pool_ids: set[int] | None = None,
 ) -> list[Recommendation]:
     if sm.is_complete():
         raise ValueError("Cannot suggest a pick or ban: the draft is already complete.")
@@ -72,6 +85,11 @@ def suggest(
     enemy_ids = sm.picked_champion_ids(side.other())
     legal_ids = sm.legal_champion_ids(champion_by_id.keys())
     remaining_enemy_picks = sm.remaining_picks(side.other())
+
+    # See the module docstring: this must stay a *separate* variable from
+    # `legal_ids`, which keeps feeding prefetch and `remaining_enemy_ids` below
+    # unrestricted.
+    candidate_ids = legal_ids if pool_ids is None else legal_ids & pool_ids
 
     # Not part of the StatsProvider protocol -- providers with no meaningful
     # per-call cost (e.g. ManualCSVProvider, a local dict lookup) simply don't
@@ -97,11 +115,13 @@ def suggest(
     p0 = compute_role_average(stats_by_champion.values())
     composition_table = load_hand_curated_features()
 
-    pick_rates = {champ_id: stats_by_champion[champ_id].pick_rate or 0.0 for champ_id in legal_ids}
+    pick_rates = {
+        champ_id: stats_by_champion[champ_id].pick_rate or 0.0 for champ_id in candidate_ids
+    }
     max_pick_rate = max(pick_rates.values(), default=0.0)
 
     recommendations = []
-    for champ_id in legal_ids:
+    for champ_id in candidate_ids:
         rec = score_candidate(
             champion=champion_by_id[champ_id],
             role=role,

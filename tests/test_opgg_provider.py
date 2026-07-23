@@ -92,6 +92,23 @@ BUILD_TEXT = (
 )
 
 
+# Captured live against lol_get_summoner_profile (Faker#KR1) -- confirmed there is
+# no role/position field anywhere in this response, see providers/opgg.py's
+# get_summoner_champion_pool docstring.
+SUMMONER_PROFILE_TEXT = (
+    "class LolGetSummonerProfile: data\n"
+    "class Data: summoner\n"
+    "class Summoner: most_champions\n"
+    "class MostChampions: champion_stats,game_type,play,win\n"
+    "class ChampionStat: champion_name,play,win,id\n"
+    "\n"
+    "LolGetSummonerProfile(Data(Summoner(MostChampions("
+    '[ChampionStat("Sylas",28,19,517),ChampionStat("Viego",15,8,234),'
+    'ChampionStat("Ezreal",12,4,81),ChampionStat("Yone",11,5,777),'
+    'ChampionStat("Dr. Mundo",5,4,36)],"RANKED",116,64))))'
+)
+
+
 def _make_provider() -> OpggProvider:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "ddragon.leagueoflegends.com":
@@ -124,6 +141,8 @@ def _make_provider() -> OpggProvider:
                 return _mcp_text_result(CHAMPION_ANALYSIS_TEXT)
             if tool == "lol_get_champion_synergies":
                 return _mcp_text_result(SYNERGIES_TEXT)
+            if tool == "lol_get_summoner_profile":
+                return _mcp_text_result(SUMMONER_PROFILE_TEXT)
         raise AssertionError(f"unexpected request: {method} {request.url}")
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
@@ -226,6 +245,25 @@ class TestGetBuild:
         provider = _make_provider()
         build = provider.get_build(266, Role.TOP, RankBracket.ALL, opponent_id=122)
         assert build.opponent_id is None
+
+
+class TestGetSummonerChampionPool:
+    """`get_summoner_champion_pool` -- not part of `StatsProvider`, used only by
+    `draftiq pool import-opgg` / `POST /api/pool/import-opgg`. No role/position
+    field exists in this response at all (confirmed live), so this only returns
+    champion names -- callers decide which role to apply them to."""
+
+    def test_returns_names_sorted_by_play_descending(self) -> None:
+        provider = _make_provider()
+        names = provider.get_summoner_champion_pool("Faker", "KR1", "KR")
+        # Fixture data is already play-descending (28, 15, 12, 11, 5) -- confirms
+        # the method doesn't silently rely on that and re-sorts itself.
+        assert names == ["Sylas", "Viego", "Ezreal", "Yone", "Dr. Mundo"]
+
+    def test_respects_limit(self) -> None:
+        provider = _make_provider()
+        names = provider.get_summoner_champion_pool("Faker", "KR1", "KR", limit=2)
+        assert names == ["Sylas", "Viego"]
 
 
 class TestPrefetchForSuggest:

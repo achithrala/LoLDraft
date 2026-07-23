@@ -192,16 +192,23 @@ function renderSuggestControls() {
   const roleSelect = document.getElementById("suggest-role");
   const lookaheadToggle = document.getElementById("lookahead-toggle");
   const anyRoleToggle = document.getElementById("any-role-toggle");
+  const poolToggle = document.getElementById("pool-toggle");
 
-  const disableAll = !state || state.is_complete || state.next_action === "ban";
-  lookaheadToggle.disabled = disableAll;
-  anyRoleToggle.disabled = disableAll;
+  const inactive = !state || state.is_complete;
+  const isBan = !inactive && state.next_action === "ban";
+  // Lookahead/any-role/role-select are picks-only. Pool is meaningful during a
+  // ban too now (a bonus/highlight for enemy-roster champions, not a
+  // restriction -- see search/ban.py), so it only disables on no-draft/complete.
+  const disablePickOnly = inactive || isBan;
+  lookaheadToggle.disabled = disablePickOnly;
+  anyRoleToggle.disabled = disablePickOnly;
+  poolToggle.disabled = inactive;
 
-  const open = disableAll ? [] : ROLES.filter((r) => !filledRoles(state.next_side).has(r));
+  const open = disablePickOnly ? [] : ROLES.filter((r) => !filledRoles(state.next_side).has(r));
   const previous = roleSelect.value;
   roleSelect.innerHTML = open.map((r) => `<option value="${r}">${r}</option>`).join("");
   if (open.includes(previous)) roleSelect.value = previous;
-  roleSelect.disabled = disableAll || anyRoleToggle.checked;
+  roleSelect.disabled = disablePickOnly || anyRoleToggle.checked;
 }
 
 async function refreshSuggestions() {
@@ -213,11 +220,13 @@ async function refreshSuggestions() {
 
   const lookahead = document.getElementById("lookahead-toggle").checked;
   const anyRole = document.getElementById("any-role-toggle").checked;
+  const pool = document.getElementById("pool-toggle").checked;
   const roleSelect = document.getElementById("suggest-role");
 
   const params = new URLSearchParams({ top: "10" });
   if (lookahead) params.set("lookahead", "true");
   if (anyRole) params.set("any_role", "true");
+  if (pool) params.set("pool", "true");
   if (state.next_action === "pick" && !anyRole) {
     if (!roleSelect.value) return; // no unfilled role selected yet
     params.set("role", roleSelect.value);
@@ -241,13 +250,215 @@ function renderSuggestions(recs, showRole) {
     const breakdown = rec.terms
       .map((t) => `${t.label}: ${t.value >= 0 ? "+" : ""}${t.value.toFixed(4)}`)
       .join(", ");
+    // "in enemy pool" is a bonus/highlight term added by search/ban.py, not a
+    // restriction (the full ban list is always shown) -- flag it visually so it
+    // doesn't get lost in the Breakdown column text.
+    const inEnemyPool = rec.terms.some((t) => t.label === "in enemy pool");
+    const nameCell = inEnemyPool
+      ? `${rec.champion_name}<span class="pool-badge">enemy pool</span>`
+      : rec.champion_name;
     tr.innerHTML =
-      `<td>${i + 1}</td><td>${rec.champion_name}</td>` +
+      `<td>${i + 1}</td><td>${nameCell}</td>` +
       (showRole ? `<td>${rec.role}</td>` : "") +
       `<td>${rec.total_score.toFixed(4)}</td>` +
       `<td>[${rec.ci_low.toFixed(3)}, ${rec.ci_high.toFixed(3)}]</td>` +
       `<td>${rec.n_games}</td><td>${breakdown}</td>`;
     tbody.appendChild(tr);
+  });
+}
+
+// ---- roster panel ----
+
+let roster = { ally: [], enemy: [] };
+
+function renderRoster() {
+  for (const side of ["ally", "enemy"]) {
+    const listEl = document.getElementById(`roster-${side}-list`);
+    listEl.innerHTML = "";
+    for (const player of roster[side]) {
+      const li = document.createElement("li");
+      li.textContent = `${player} `;
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.textContent = "×";
+      removeBtn.addEventListener("click", async () => {
+        clearError();
+        try {
+          roster = await apiPost(`${API}/roster/remove`, { side, player });
+          renderRoster();
+        } catch (e) {
+          showError(e.message);
+        }
+      });
+      li.appendChild(removeBtn);
+      listEl.appendChild(li);
+    }
+  }
+}
+
+async function refreshRoster() {
+  if (!state) {
+    roster = { ally: [], enemy: [] };
+    renderRoster();
+    return;
+  }
+  try {
+    roster = await apiGet(`${API}/roster`);
+  } catch {
+    roster = { ally: [], enemy: [] };
+  }
+  renderRoster();
+}
+
+function wireRosterForm(side) {
+  document.getElementById(`roster-${side}-form`).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearError();
+    const input = e.target.querySelector("input");
+    const player = input.value.trim();
+    if (!player) return;
+    try {
+      roster = await apiPost(`${API}/roster/add`, { side, player });
+      input.value = "";
+      renderRoster();
+    } catch (err) {
+      showError(err.message);
+    }
+  });
+}
+
+// ---- champion pool panel ----
+
+let poolRegistry = {}; // { player: { by_role: { role: [names] } } }
+let poolChampions = []; // Champion[], from /api/pool/champions (no active-draft requirement)
+
+function renderPoolSelectors() {
+  const roleOptions = ROLES.map((r) => `<option value="${r}">${r}</option>`).join("");
+  document.getElementById("pool-role").innerHTML = roleOptions;
+  document.getElementById("import-role").innerHTML = roleOptions;
+  document.getElementById("pool-champion").innerHTML = poolChampions
+    .map((c) => `<option value="${c.champion_id}">${c.name}</option>`)
+    .join("");
+}
+
+async function refreshPoolChampions() {
+  try {
+    poolChampions = await apiGet(`${API}/pool/champions`);
+  } catch {
+    poolChampions = [];
+  }
+  renderPoolSelectors();
+}
+
+function renderPoolList() {
+  const el = document.getElementById("pool-list");
+  el.innerHTML = "";
+  const players = Object.keys(poolRegistry).sort();
+  if (!players.length) {
+    el.innerHTML = '<p class="hint">No pools defined yet.</p>';
+    return;
+  }
+  for (const player of players) {
+    const pool = poolRegistry[player];
+    const div = document.createElement("div");
+    div.className = "pool-entry";
+    const title = document.createElement("strong");
+    title.textContent = player;
+    div.appendChild(title);
+    for (const role of ROLES) {
+      const names = (pool.by_role && pool.by_role[role]) || [];
+      if (!names.length) continue;
+      const row = document.createElement("div");
+      row.className = "pool-role-row";
+      const roleLabel = document.createElement("span");
+      roleLabel.textContent = `${role}:`;
+      row.appendChild(roleLabel);
+      for (const name of names) {
+        const chip = document.createElement("span");
+        chip.className = "pool-chip";
+        chip.textContent = `${name} `;
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.textContent = "×";
+        removeBtn.addEventListener("click", async () => {
+          clearError();
+          const champ = poolChampions.find((c) => c.name === name);
+          if (!champ) return;
+          try {
+            const resp = await apiPost(`${API}/pool/remove`, {
+              player,
+              role,
+              champion_id: champ.champion_id,
+            });
+            poolRegistry = resp.registry;
+            renderPoolList();
+          } catch (e) {
+            showError(e.message);
+          }
+        });
+        chip.appendChild(removeBtn);
+        row.appendChild(chip);
+      }
+      div.appendChild(row);
+    }
+    el.appendChild(div);
+  }
+}
+
+async function refreshPool() {
+  try {
+    const resp = await apiGet(`${API}/pool`);
+    poolRegistry = resp.registry;
+  } catch {
+    poolRegistry = {};
+  }
+  renderPoolList();
+}
+
+function wirePoolForms() {
+  document.getElementById("pool-add-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearError();
+    const player = document.getElementById("pool-player").value.trim();
+    const role = document.getElementById("pool-role").value;
+    const championId = parseInt(document.getElementById("pool-champion").value, 10);
+    if (!player || !role || !championId) return;
+    try {
+      const resp = await apiPost(`${API}/pool/add`, { player, role, champion_id: championId });
+      poolRegistry = resp.registry;
+      renderPoolList();
+    } catch (err) {
+      showError(err.message);
+    }
+  });
+
+  document.getElementById("pool-import-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearError();
+    const player = document.getElementById("import-player").value.trim();
+    const role = document.getElementById("import-role").value;
+    const riotId = document.getElementById("import-riot-id").value.trim();
+    const region = document.getElementById("import-region").value.trim();
+    const top = parseInt(document.getElementById("import-top").value, 10) || 10;
+    const hashIdx = riotId.indexOf("#");
+    if (!player || !role || hashIdx === -1 || !region) {
+      showError('Riot ID must be in the form Name#Tag, e.g. "Faker#KR1".');
+      return;
+    }
+    try {
+      const resp = await apiPost(`${API}/pool/import-opgg`, {
+        player,
+        role,
+        game_name: riotId.slice(0, hashIdx),
+        tag_line: riotId.slice(hashIdx + 1),
+        region,
+        top,
+      });
+      poolRegistry = resp.registry;
+      renderPoolList();
+    } catch (err) {
+      showError(err.message);
+    }
   });
 }
 
@@ -335,6 +546,7 @@ async function refreshState() {
   renderStatusBar();
   renderBoard();
   renderSuggestControls();
+  await refreshRoster();
   if (state) {
     await refreshChampions();
     await refreshSuggestions();
@@ -360,6 +572,7 @@ function init() {
     try {
       state = await apiPost(`${API}/draft/new`, { mode, rank, provider });
       await refreshChampions();
+      await refreshRoster(); // roster resets on every `new` (it lives in DraftState)
       afterMutation();
     } catch (err) {
       showError(err.message);
@@ -377,8 +590,18 @@ function init() {
     renderSuggestControls();
     refreshSuggestions();
   });
+  document.getElementById("pool-toggle").addEventListener("change", () => {
+    renderSuggestControls();
+    refreshSuggestions();
+  });
   document.getElementById("suggest-role").addEventListener("change", refreshSuggestions);
   document.getElementById("show-build").addEventListener("click", onShowBuild);
+
+  wireRosterForm("ally");
+  wireRosterForm("enemy");
+  wirePoolForms();
+  refreshPoolChampions();
+  refreshPool();
 
   refreshState();
 }

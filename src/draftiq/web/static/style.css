@@ -140,3 +140,64 @@ select,
 button {
   font-size: 0.9rem;
 }
+
+.hint {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  margin-top: -0.25rem;
+}
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+#pool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.pool-entry {
+  border-top: 1px solid var(--border);
+  padding-top: 0.4rem;
+}
+
+.pool-entry .pool-role-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+}
+
+.pool-chip {
+  background: var(--bg-muted);
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.pool-chip button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.pool-badge {
+  display: inline-block;
+  background: #c77b00;
+  color: #fff;
+  border-radius: 3px;
+  padding: 0 0.3rem;
+  font-size: 0.75rem;
+  margin-left: 0.3rem;
+}

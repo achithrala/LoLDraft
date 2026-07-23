@@ -19,6 +19,16 @@ Deliberately does not compute counterpick exposure for the hypothetical enemy pi
 -- that's a second-order "if they picked this, who might counter *them* later"
 question, adding real cost for a speculative ban-time analysis. Composition fit is
 still included: does this champion complete a strong comp for them.
+
+`pool_ids_by_role`, if given, is an *already-resolved* `{role: allowed_ids_or_None}`
+map -- the union of a set of named enemy players' champion pools (see
+`models.consolidated_pool_ids`), one per enemy unfilled role. Unlike every other
+`pool_ids`/`pool_ids_by_role` parameter in `search/`, this one is deliberately a
+**bonus, not a restriction**: denying a champion a *specific enemy player* actually
+plays is worth more than denying something merely popular, but the full ban list
+must never be narrowed to just their known pool -- there could always be a strong
+ban outside it. `POOL_BONUS` is added on top of the existing pick-rate bonus when the
+candidate's best-scoring role has them in the consolidated enemy pool.
 """
 
 from __future__ import annotations
@@ -36,6 +46,11 @@ from draftiq.stats.shrinkage import DEFAULT_K, DEFAULT_K_MATCHUP, compute_role_a
 # effectively nothing.
 PICK_RATE_WEIGHT_SCALE = 0.1
 
+# A known, targeted hit -- "this specific enemy player plays this" -- is worth more
+# than generic popularity (PICK_RATE_WEIGHT_SCALE's max contribution is ~0.03): it's
+# real intel about who's actually in this draft, not a population average.
+POOL_BONUS = 0.05
+
 
 def suggest_bans(
     sm: DraftStateMachine,
@@ -43,6 +58,7 @@ def suggest_bans(
     top_n: int = 5,
     k: float = DEFAULT_K,
     k_m: float = DEFAULT_K_MATCHUP,
+    pool_ids_by_role: dict[Role, set[int] | None] | None = None,
 ) -> list[Recommendation]:
     if sm.is_complete():
         raise ValueError("Cannot suggest a ban: the draft is already complete.")
@@ -102,13 +118,18 @@ def suggest_bans(
             pick_rate = provider.get_champion_stats(champ_id, role, rank).pick_rate or 0.0
             pick_rate_bonus = PICK_RATE_WEIGHT_SCALE * pick_rate
             adjusted_score = rec.total_score + pick_rate_bonus
+            terms = [
+                *rec.terms,
+                TermContribution(label="pick_rate weight", value=pick_rate_bonus),
+            ]
+
+            pool_ids = (pool_ids_by_role or {}).get(role)
+            if pool_ids is not None and champ_id in pool_ids:
+                adjusted_score += POOL_BONUS
+                terms.append(TermContribution(label="in enemy pool", value=POOL_BONUS))
 
             if adjusted_score > best_score:
                 best_score = adjusted_score
-                terms = [
-                    *rec.terms,
-                    TermContribution(label="pick_rate weight", value=pick_rate_bonus),
-                ]
                 best_rec = rec.model_copy(update={"total_score": adjusted_score, "terms": terms})
 
         if best_rec is not None:

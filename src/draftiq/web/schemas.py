@@ -9,7 +9,17 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from draftiq.draft.state import DraftStateMachine
-from draftiq.models import ActionType, Champion, DraftMode, ProviderName, RankBracket, Role, Side
+from draftiq.models import (
+    ActionType,
+    Champion,
+    ChampionPool,
+    DraftMode,
+    ProviderName,
+    RankBracket,
+    Role,
+    RosterSide,
+    Side,
+)
 from draftiq.providers.base import StatsProvider
 
 
@@ -28,6 +38,51 @@ def resolve_champion_id(champion_id: int, champions: list[Champion]) -> Champion
         if champ.champion_id == champion_id:
             return champ
     raise UnknownChampionIdError(f"Unknown champion_id {champion_id}.")
+
+
+class PoolAddRequest(BaseModel):
+    player: str
+    role: Role
+    champion_id: int
+
+
+class PoolRemoveRequest(BaseModel):
+    player: str
+    role: Role
+    champion_id: int
+
+
+class PoolClearRequest(BaseModel):
+    player: str
+    role: Role | None = None  # None clears every role for this player
+
+
+class PoolImportOpggRequest(BaseModel):
+    player: str
+    role: Role
+    game_name: str
+    tag_line: str
+    region: str
+    top: int = 10
+
+
+class PoolResponse(BaseModel):
+    registry: dict[str, ChampionPool]
+
+
+class RosterAddRequest(BaseModel):
+    side: RosterSide
+    player: str
+
+
+class RosterRemoveRequest(BaseModel):
+    side: RosterSide
+    player: str
+
+
+class RosterResponse(BaseModel):
+    ally: list[str]
+    enemy: list[str]
 
 
 class NewDraftRequest(BaseModel):
