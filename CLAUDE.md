@@ -442,6 +442,18 @@ should fail first.
   total_games)`. These only feed the Phase 2 counterpick-exposure weighting (a soft
   tiebreaker), not the core win-rate score.
 
+- **`get_champions()` returns champions sorted alphabetically by name, for both
+  `OpggProvider` and `ManualCSVProvider`** -- prompted by a live usability report:
+  OP.GG's `lol_list_champions` returns its own internal ordering (previously
+  re-sorted by `champion_id`, i.e. Data Dragon's numeric key, which isn't
+  meaningful to a human either), so the web champion picker and the build/tips/
+  pool selects were showing champions in an arbitrary order with no way to
+  quickly scan for one by name. Every consumer of the full roster list is a
+  selection UI, never the ranked suggestion tables (`search/*` always sorts its
+  *own* output by score, independent of the order champions were handed to it
+  in), so this was safe to change unconditionally rather than needing a
+  per-caller opt-in.
+
 - **`RankBracket` was redesigned in Phase 2** to match OP.GG's real tier vocabulary
   exactly (`IRON` through `CHALLENGER`, plus `_PLUS` bands, plus `ALL`), replacing
   Phase 1's 5-value placeholder which didn't correspond to anything real except the

@@ -34,7 +34,7 @@ class TestComputeExposure:
         """This is the pick-order-priority behavior: the exact same candidate, in
         the exact same board state, is riskier to pick when the enemy has more
         picks left to find a counter with."""
-        champion = provider.get_champions()[MALPHITE - 1]
+        champion = {c.champion_id: c for c in provider.get_champions()}[MALPHITE]
         base_p_hat = _p_hat_for(provider, MALPHITE)
         champion_by_id = {c.champion_id: c for c in provider.get_champions()}
         remaining_pool = {DARIUS, JAX, AATROX}
@@ -65,7 +65,7 @@ class TestComputeExposure:
         """Picking last (the enemy has no picks left after this one) means there is
         no future counter risk at all -- exposure must be exactly zero, not just
         small."""
-        champion = provider.get_champions()[MALPHITE - 1]
+        champion = {c.champion_id: c for c in provider.get_champions()}[MALPHITE]
         base_p_hat = _p_hat_for(provider, MALPHITE)
         champion_by_id = {c.champion_id: c for c in provider.get_champions()}
 
@@ -83,7 +83,7 @@ class TestComputeExposure:
         assert term is None
 
     def test_picks_the_single_worst_counter(self, provider: ManualCSVProvider) -> None:
-        champion = provider.get_champions()[MALPHITE - 1]
+        champion = {c.champion_id: c for c in provider.get_champions()}[MALPHITE]
         base_p_hat = _p_hat_for(provider, MALPHITE)
         champion_by_id = {c.champion_id: c for c in provider.get_champions()}
 
@@ -106,7 +106,7 @@ class TestComputeExposure:
     def test_no_matchup_data_in_remaining_pool_gives_zero_exposure(
         self, provider: ManualCSVProvider
     ) -> None:
-        champion = provider.get_champions()[MALPHITE - 1]
+        champion = {c.champion_id: c for c in provider.get_champions()}[MALPHITE]
         base_p_hat = _p_hat_for(provider, MALPHITE)
         champion_by_id = {c.champion_id: c for c in provider.get_champions()}
 
@@ -128,7 +128,7 @@ class TestComputeExposure:
         """Jax beats Darius 56% (per matchups.csv) -- a favorable matchup should
         never register as exposure, since exposure only cares about matchups the
         candidate loses."""
-        champion = provider.get_champions()[JAX - 1]
+        champion = {c.champion_id: c for c in provider.get_champions()}[JAX]
         base_p_hat = _p_hat_for(provider, JAX)
         champion_by_id = {c.champion_id: c for c in provider.get_champions()}
 
@@ -150,7 +150,7 @@ class TestComputeExposure:
     ) -> None:
         """If the candidate itself is (erroneously) included in remaining_enemy_ids,
         it must never be compared against itself."""
-        champion = provider.get_champions()[MALPHITE - 1]
+        champion = {c.champion_id: c for c in provider.get_champions()}[MALPHITE]
         base_p_hat = _p_hat_for(provider, MALPHITE)
         champion_by_id = {c.champion_id: c for c in provider.get_champions()}
 

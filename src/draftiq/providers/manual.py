@@ -52,7 +52,7 @@ class ManualCSVProvider:
         return SYNTHETIC_PATCH
 
     def get_champions(self) -> list[Champion]:
-        return list(self._champions.values())
+        return sorted(self._champions.values(), key=lambda c: c.name)
 
     def get_champion_stats(self, champion_id: int, role: Role, rank: RankBracket) -> ChampionStats:
         key = (champion_id, role, rank)

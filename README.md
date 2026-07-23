@@ -249,7 +249,13 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
 - `manual.py` -- `ManualCSVProvider`: loads all five `data/manual/*.csv` files into
   memory at construction, then implements every `StatsProvider` method as a plain
   dict lookup (falling back to `games=0` for an unlisted matchup/synergy pair, per
-  the protocol's contract). Zero network calls, ever.
+  the protocol's contract). Zero network calls, ever. `get_champions` returns the
+  list sorted alphabetically by name (both this provider and `OpggProvider` do --
+  see the note below `opgg.py`'s `get_champions`), since every consumer of the
+  full roster is a selection UI (the web champion picker, and the build/tips/pool
+  selects) where insertion/id order is just noise; suggestion ranking itself is
+  unaffected since `search/*` always sorts its own output by score, independent
+  of the input list's order.
 - `opgg.py` -- `OpggProvider`, talking to the live OP.GG MCP server:
   - `_McpClient` (private) -- minimal MCP-over-HTTP client: `initialize` handshake,
     `notifications/initialized`, then `tools/call`, reusing one session id.

@@ -276,7 +276,7 @@ class OpggProvider:
             )
             for row in parsed["data"]["champions"]
         ]
-        return sorted(champions, key=lambda c: c.champion_id)
+        return sorted(champions, key=lambda c: c.name)
 
     def _opgg_champion_param(self, champion_id: int) -> str:
         for champion in self.get_champions():
