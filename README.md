@@ -9,6 +9,62 @@ sources: a bundled synthetic dataset (`data/manual/`, fully offline) and live OP
 win-rate data. See `CLAUDE.md` for architecture notes and `lol-draft-tool-prompt.md`
 for the full spec and phase plan.
 
+## Getting started
+
+Requirements: Python 3.11+ and [`uv`](https://docs.astral.sh/uv/).
+
+```sh
+git clone https://github.com/achithrala/LoLDraft.git
+cd LoLDraft
+uv sync              # creates .venv/ and installs draftiq + its dependencies
+```
+
+There's no separate build/install step beyond `uv sync` -- `draftiq` is a normal
+`uv`-managed project, and `pyproject.toml` registers a `draftiq` console-script entry
+point (`draftiq = "draftiq.cli:app"`) pointing at the `typer` app in `src/draftiq/cli.py`.
+Two ways to run it, both launch the exact same executable:
+
+```sh
+uv run draftiq new          # (1) recommended -- uv resolves the venv for you every time
+```
+
+```sh
+source .venv/bin/activate   # (2) or activate the venv once per shell session...
+draftiq new                 #     ...then drop the `uv run` prefix for the rest of it
+```
+
+Every command below assumes option (1) (`uv run draftiq ...`); substitute `draftiq ...`
+if you've activated the venv instead. Nothing else needs to be started or launched for
+the CLI itself -- `draftiq new`/`ban`/`pick`/`suggest`/etc. run and exit like any other
+CLI tool, persisting state to `.draftiq/state.json` between invocations (see below).
+
+The one thing that *does* stay running is the optional local web UI:
+
+```sh
+uv run draftiq serve                        # binds 127.0.0.1:8765 by default
+uv run draftiq serve --host 0.0.0.0 --port 9000  # override host/port if needed
+```
+
+then open `http://127.0.0.1:8765` (or whatever host/port you chose) in a browser.
+`Ctrl-C` in the terminal stops it. It's local-only by design -- no auth, no
+`--workers` flag (see `CLAUDE.md`'s Phase 3 section for why) -- so don't expose it
+past your own machine without understanding that tradeoff first.
+
+A minimal first session, offline (no OP.GG account or network access needed):
+
+```sh
+uv run draftiq new                          # start a fresh SOLOQ draft
+uv run draftiq ban Yasuo                    # ban/pick follow whoever's turn it is --
+uv run draftiq state                        # ...check `state` if you're unsure whose turn is next
+uv run draftiq suggest                      # see ranked ban suggestions
+uv run draftiq pick Aatrox --role top       # once it's a pick phase
+uv run draftiq suggest --role top           # ranked pick suggestions with explanations
+```
+
+Add `--provider opgg` to `draftiq new` once you want live win-rate data instead of the
+bundled offline dataset (no API key needed -- it talks to OP.GG's public MCP server
+directly). The full command reference follows below.
+
 ## Usage
 
 ```sh
