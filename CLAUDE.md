@@ -435,6 +435,42 @@ should fail first.
   to the `StatsProvider` protocol -- providers with negligible per-call cost (manual
   CSV, a dict lookup) have no reason to implement it.
 
+- **`prefetch_for_suggest`'s thread pool was raised from 16 to 64 workers**, prompted
+  by a live-usage report: a real draft only gives roughly a minute per pick/ban, and a
+  cold web-UI suggestion at 16 workers measured 45-86s for a single role/rank query in
+  practice (see the "web UI suggestions" bullet below) -- close enough to the clock to
+  be a real problem, not just a nice-to-have. These are pure I/O-bound HTTP calls (the
+  GIL is released while waiting on the network), so more worker threads is a genuine
+  speedup rather than pointless contention -- confirmed live with a fully cleared
+  on-disk cache (`~/.cache/draftiq/cache.sqlite3`) *and* a freshly started process each
+  time (an already-running process keeps its open sqlite connection alive even after
+  the file is deleted out from under it on most filesystems, which silently produced a
+  false "already fast" reading the first time this was checked): the same cold query
+  dropped from ~45-86s to ~29s for both a top and a jungle role. `OpggProvider.__init__`
+  now also passes the underlying `httpx.Client` an explicit `httpx.Limits(max_connections
+  =96, max_keepalive_connections=64)` -- httpx's default is `max_connections=100`
+  (comfortable headroom over 64 already, so this wasn't strictly required to fix the
+  bug), but leaving it implicit would make a future worker-count bump silently
+  bottleneck on the connection pool instead of doing what its name says. 64 was chosen
+  for headroom under that cap, not because OP.GG documents a rate limit -- it doesn't;
+  if OP.GG starts throttling or erroring under this load in practice, lower this before
+  raising the connection limit further.
+
+- **The web UI's "suggestions show the wrong role" bug was a frontend race, not a
+  backend one -- confirmed live before touching any code.** Switching the role dropdown
+  fires a new `/api/draft/suggest` fetch without waiting for the previous one; against
+  OP.GG's variable, network-bound latency, an older/slower request could resolve after
+  a newer/faster one and silently overwrite the table with the previous role's results
+  (e.g. top-lane picks still showing after switching to jungle). Direct API checks
+  during the same investigation confirmed the backend itself always returned correct,
+  role-scoped results -- this ruled out `search/dispatch.py`/`greedy.py` before any
+  fix was written. `web/static/app.js`'s `refreshSuggestions` now tags every call with
+  a monotonic `suggestRequestId` and only renders a response if it's still the most
+  recent one in flight (aborting the stale fetch via `AbortController` is a courtesy,
+  not what makes this correct); it also shows a full-width "Loading suggestions..."
+  row while a fetch against OP.GG is outstanding, since even after the 64-worker fix
+  above a cold query is still ~29s, not instant.
+
 ## Architecture decisions and quirks
 
 - **Provider split.** `DataDragonProvider` only implements `get_patch()` and

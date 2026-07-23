@@ -221,7 +221,14 @@ class OpggProvider:
     ) -> None:
         self._source = "opgg"
         self._cache = cache or SQLiteCache()
-        self._http = client or httpx.Client(timeout=15.0)
+        # `max_connections` must stay >= `prefetch_for_suggest`'s ThreadPoolExecutor
+        # `max_workers` -- httpx's connection pool blocks a request until a slot is
+        # free rather than erroring, so a client with fewer connections than
+        # concurrent worker threads would silently serialize prefetch bursts behind
+        # the scenes no matter how many threads are spun up.
+        self._http = client or httpx.Client(
+            timeout=15.0, limits=httpx.Limits(max_connections=96, max_keepalive_connections=64)
+        )
         self._mcp = _McpClient(self._http)
 
     @cached(ttl_seconds=3600.0, keyed_by_patch=False)
@@ -525,6 +532,24 @@ class OpggProvider:
         whole remaining pool, so callers should pass it unconditionally once any
         picks remain for either side. `include_synergies` only matters once there
         are allies to check synergy against.
+
+        `max_workers=64` (raised from an initial 16 after a live draft-clock
+        complaint: a full pick/ban has roughly a minute on the clock in a real
+        draft, and a cold call at 16 workers measured 45-86s for a single
+        role/rank query -- too close to the wire). These are pure I/O-bound HTTP
+        calls (the GIL is released while waiting on the network), so raising
+        worker count is a real speedup, not just contention -- confirmed live
+        after the change, with a fully cleared on-disk cache (`~/.cache/draftiq/
+        cache.sqlite3`) and a freshly started process each time so no earlier run
+        was warming the result: the same cold single-role query dropped from
+        ~45-86s to ~29s for both a top and a jungle query. Still real, network-
+        bound latency, not instant -- comfortably inside a ~60s pick clock with
+        margin, but callers still need the frontend's loading indicator (see
+        `web/static/app.js`) rather than assuming this is fast enough to skip one.
+        64 is chosen to stay under the `httpx.Client`'s `max_connections=96` (see
+        `__init__`) with headroom, not because OP.GG has a documented rate limit
+        -- there isn't one; if OP.GG starts throttling or erroring under this load
+        in practice, lower this before raising the connection limit further.
         """
         ids = list(champion_ids)
         tasks: list[Any] = [lambda cid=cid: self.get_champion_stats(cid, role, rank) for cid in ids]
@@ -532,7 +557,7 @@ class OpggProvider:
             tasks += [lambda cid=cid: self._counters(cid, role, rank) for cid in ids]
         if include_synergies:
             tasks += [lambda cid=cid: self._synergies(cid, rank) for cid in ids]
-        with ThreadPoolExecutor(max_workers=16) as pool:
+        with ThreadPoolExecutor(max_workers=64) as pool:
             futures = [pool.submit(task) for task in tasks]
             for future in futures:
                 future.result()
