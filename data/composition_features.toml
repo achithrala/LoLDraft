@@ -1,5 +1,24 @@
-# Hand-curated composition feature vectors, keyed by champion_id (matches Data
-# Dragon / OP.GG's shared numeric champion key -- see CLAUDE.md).
+# Hand-curated composition feature vectors, keyed by `ddragon_id` (Data Dragon's
+# stable string champion id, e.g. "MissFortune" -- the same field `Champion.
+# ddragon_id` exposes).
+#
+# NOT keyed by champion_id. An earlier version of this file used champion_id,
+# on the mistaken assumption (stated in this file's own header at the time) that
+# it was "Data Dragon / OP.GG's shared numeric champion key." It isn't:
+# ManualCSVProvider's ids 1-20 are a local synthetic numbering (see CLAUDE.md),
+# and real Data Dragon/OP.GG happens to assign its own ids 1-20 to a completely
+# different set of champions (Annie, Olaf, Galio, ... Warwick=19, Nunu=20).
+# Caught from a live user report: composition scoring under --provider opgg was
+# silently pulling a hand-curated entry meant for an unrelated manual-dataset
+# champion of the same numeric id -- e.g. real Warwick (opgg id 19) was scored
+# using this table's old entry for manual-dataset id 19, which was Renekton, so
+# Warwick escaped the frontline/engage/waveclear penalties a zero-support-games
+# champion should get, letting him rank above genuine support picks. `ddragon_id`
+# is a real, globally stable identifier both providers agree on (ManualCSVProvider
+# reuses real Data Dragon strings for its 20 champions -- see champions.csv), so
+# it can't collide across providers the way small integers can. Same fix pattern
+# already used for champion pools (see CLAUDE.md's "champion pool weighting"
+# section) -- store/match by a provider-independent identity, never a raw id.
 #
 # These are subjective judgment calls about each champion's kit -- NOT derived from
 # any provider -- checked in and versioned like code, same as the spec asks for.
@@ -16,7 +35,7 @@
 #   frontline   -- can reasonably absorb damage/tank for the team
 #   scaling     -- primary power-spike window: "early" | "mid" | "late"
 
-[1] # Aatrox
+[Aatrox]
 ad_share = 1.0
 ap_share = 0.0
 true_share = 0.0
@@ -27,7 +46,7 @@ waveclear = true
 frontline = true
 scaling = "mid"
 
-[2] # Darius
+[Darius]
 ad_share = 1.0
 ap_share = 0.0
 true_share = 0.0
@@ -38,7 +57,7 @@ waveclear = true
 frontline = true
 scaling = "early"
 
-[3] # Malphite
+[Malphite]
 ad_share = 0.2
 ap_share = 0.8
 true_share = 0.0
@@ -49,7 +68,7 @@ waveclear = false
 frontline = true
 scaling = "mid"
 
-[4] # Jax
+[Jax]
 ad_share = 0.85
 ap_share = 0.15
 true_share = 0.0
@@ -60,7 +79,7 @@ waveclear = true
 frontline = true
 scaling = "late"
 
-[5] # Lee Sin
+[LeeSin]
 ad_share = 1.0
 ap_share = 0.0
 true_share = 0.0
@@ -71,7 +90,7 @@ waveclear = false
 frontline = false
 scaling = "early"
 
-[6] # Vi
+[Vi]
 ad_share = 1.0
 ap_share = 0.0
 true_share = 0.0
@@ -82,7 +101,7 @@ waveclear = false
 frontline = true
 scaling = "mid"
 
-[7] # Sejuani
+[Sejuani]
 ad_share = 0.3
 ap_share = 0.7
 true_share = 0.0
@@ -93,7 +112,7 @@ waveclear = false
 frontline = true
 scaling = "mid"
 
-[8] # Kindred
+[Kindred]
 ad_share = 1.0
 ap_share = 0.0
 true_share = 0.0
@@ -104,7 +123,7 @@ waveclear = true
 frontline = false
 scaling = "late"
 
-[9] # Ahri
+[Ahri]
 ad_share = 0.0
 ap_share = 1.0
 true_share = 0.0
@@ -115,7 +134,7 @@ waveclear = true
 frontline = false
 scaling = "mid"
 
-[10] # Zed
+[Zed]
 ad_share = 1.0
 ap_share = 0.0
 true_share = 0.0
@@ -126,7 +145,7 @@ waveclear = true
 frontline = false
 scaling = "mid"
 
-[11] # Orianna
+[Orianna]
 ad_share = 0.0
 ap_share = 1.0
 true_share = 0.0
@@ -137,7 +156,7 @@ waveclear = true
 frontline = false
 scaling = "mid"
 
-[12] # Yasuo
+[Yasuo]
 ad_share = 1.0
 ap_share = 0.0
 true_share = 0.0
@@ -148,7 +167,7 @@ waveclear = true
 frontline = false
 scaling = "late"
 
-[13] # Jinx
+[Jinx]
 ad_share = 1.0
 ap_share = 0.0
 true_share = 0.0
@@ -159,7 +178,7 @@ waveclear = true
 frontline = false
 scaling = "late"
 
-[14] # Caitlyn
+[Caitlyn]
 ad_share = 1.0
 ap_share = 0.0
 true_share = 0.0
@@ -170,7 +189,7 @@ waveclear = true
 frontline = false
 scaling = "mid"
 
-[15] # Miss Fortune
+[MissFortune]
 ad_share = 0.9
 ap_share = 0.1
 true_share = 0.0
@@ -181,7 +200,7 @@ waveclear = true
 frontline = false
 scaling = "mid"
 
-[16] # Thresh
+[Thresh]
 ad_share = 0.3
 ap_share = 0.7
 true_share = 0.0
@@ -192,7 +211,7 @@ waveclear = false
 frontline = true
 scaling = "mid"
 
-[17] # Lulu
+[Lulu]
 ad_share = 0.0
 ap_share = 1.0
 true_share = 0.0
@@ -203,7 +222,7 @@ waveclear = false
 frontline = false
 scaling = "mid"
 
-[18] # Nautilus
+[Nautilus]
 ad_share = 0.2
 ap_share = 0.8
 true_share = 0.0
@@ -214,7 +233,7 @@ waveclear = false
 frontline = true
 scaling = "mid"
 
-[19] # Renekton
+[Renekton]
 ad_share = 1.0
 ap_share = 0.0
 true_share = 0.0
@@ -225,7 +244,7 @@ waveclear = true
 frontline = true
 scaling = "early"
 
-[20] # Xin Zhao
+[XinZhao]
 ad_share = 1.0
 ap_share = 0.0
 true_share = 0.0

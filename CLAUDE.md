@@ -571,6 +571,37 @@ should fail first.
   hand-curated; anything else (most of OP.GG's ~170-champion roster) falls back to a
   crude Data-Dragon-tag heuristic, clearly marked as a fallback, not a substitute.
 
+- **A real id-collision bug, caught from a live "why is a champion with zero games
+  ranking highly" report: the table was originally keyed by `champion_id`, on the
+  mistaken assumption (stated in the file's own header) that it was "Data Dragon /
+  OP.GG's shared numeric champion key."** It isn't -- `ManualCSVProvider`'s ids 1-20
+  are a local synthetic numbering (see the architecture bullet below), and real Data
+  Dragon/OP.GG happens to assign its *own* ids 1-20 to a totally different 20
+  champions (1=Annie, ..., 19=Warwick, 20=Nunu). Concretely: manual-dataset id 19 is
+  Renekton, so under `--provider opgg`, real Warwick (also id 19, purely by
+  coincidence) was silently scored using Renekton's hand-curated composition
+  profile -- frontline/engage/waveclear all `true` -- letting him dodge the
+  no_frontline/no_engage/no_waveclear penalties a real support pick gets hit with,
+  which combined with a 0-game candidate's win rate shrinking all the way to the
+  role's population average (never penalized, just "no evidence") was enough to
+  outrank real, heavily-played support champions. This affected every one of the
+  ~20 real OP.GG champions whose id happens to fall in 1-20, not just Warwick.
+  Fixed by re-keying the table by `Champion.ddragon_id` (a real, provider-
+  independent string both providers agree on -- `ManualCSVProvider` reuses real
+  Data Dragon strings for its 20 champions) instead of the raw numeric id -- the
+  same "match by a portable identity, never a raw provider-specific id" pattern
+  already used for champion pools. Verified live: post-fix, Warwick/Olaf/Nunu -- the
+  specific champions the report named -- dropped out of support suggestions
+  entirely. One narrower residual case remains, not a bug: Renekton (a real
+  hand-curated champion, now legitimately id-matched) still ranks unusually high
+  for support in some queries purely because his real kit *does* have frontline/
+  engage/waveclear, so he still pays no composition penalty despite 0 real support
+  games -- there is currently no scoring term that penalizes *implausibility*
+  (zero games in a role) beyond shrinking to the population average; the
+  `popularity` term only ever adds a bonus, never a penalty, for low pick rate.
+  Flagged, not fixed -- would need a product decision on whether/how to add a
+  low-pick-rate penalty, not just a data-correctness fix.
+
 - **Counterpick exposure's exact weighting formula isn't in the spec** -- it says
   "weighted by how many enemy picks remain and by how likely those counters are to
   actually be picked (pick rate)" without a formula. `stats/exposure.py` finds the

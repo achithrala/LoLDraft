@@ -324,11 +324,16 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
   - `CompositionFeatures` -- a champion's damage-type split, engage/disengage/poke/
     waveclear/frontline flags, and early/mid/late scaling window.
   - `load_hand_curated_features()` -- loads (and caches) the hand-curated table from
-    `data/composition_features.toml`.
+    `data/composition_features.toml`, keyed by `Champion.ddragon_id` (a real,
+    provider-independent Data Dragon string id) -- NOT `champion_id`, which
+    collides across providers (see `CLAUDE.md`'s composition-features bullet for
+    the live bug this was caught from: `ManualCSVProvider`'s synthetic ids 1-20
+    overlap with real Data Dragon/OP.GG ids 1-20, a completely different 20
+    champions).
   - `features_from_tags(tags)` -- crude fallback for any champion not in that table,
     derived from Data Dragon tags.
-  - `get_champion_features(champion, hand_curated)` -- hand-curated entry if one
-    exists, else the tag-based fallback.
+  - `get_champion_features(champion, hand_curated)` -- hand-curated entry (matched
+    by `ddragon_id`) if one exists, else the tag-based fallback.
   - `comp_fit(candidate, ally_features)` -- penalizes a team (soft targets only, per
     spec: small relative to the win-rate terms) for damage skew, no frontline, no
     engage, or no waveclear.
@@ -521,7 +526,8 @@ full command flow against meaningfully offline; verified live instead.
 **`data/`**
 
 - `composition_features.toml` -- hand-curated `CompositionFeatures` for all 20
-  champions in the manual dataset, keyed by `champion_id`.
+  champions in the manual dataset, keyed by `ddragon_id` (e.g. `"MissFortune"`) --
+  not `champion_id`, which collides across providers.
 - `manual/` -- the synthetic dataset `ManualCSVProvider` reads: `champions.csv`,
   `champion_stats.csv`, `matchups.csv`, `synergies.csv`, `builds.csv`. All
   fabricated, never mistakable for real data (`get_patch()` returns `"SYNTH-1"`).

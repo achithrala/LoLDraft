@@ -14,6 +14,16 @@ OP.GG's ~170-champion roster), a crude Data Dragon tag-based heuristic fills in 
 tag-based AD/AP heuristics are known to be wrong for plenty of real champions (Kayle,
 Gwen, Rumble all defy their primary tag), so this is explicitly a fallback, not a
 substitute for hand-curating more entries.
+
+The table is keyed by `Champion.ddragon_id` (a real, provider-independent Data
+Dragon string id), NOT `champion_id` -- a real bug caught from a live user report:
+numeric `champion_id` collides across providers, since `ManualCSVProvider`'s
+synthetic 1-20 ids overlap with real Data Dragon/OP.GG ids 1-20 (which name a
+completely different 20 champions). Keying by id used to let, e.g., real OP.GG
+Warwick (id 19) silently inherit the manual dataset's id-19 entry (Renekton) --
+letting a champion with zero recorded games in a role dodge composition penalties
+a real, unrelated champion's kit happened not to have. See
+`data/composition_features.toml`'s own header for the full writeup.
 """
 
 from __future__ import annotations
@@ -138,12 +148,16 @@ _UNKNOWN_CHAMPION_FEATURES = CompositionFeatures(
 @lru_cache(maxsize=1)
 def load_hand_curated_features(
     path: Path = DEFAULT_FEATURES_PATH,
-) -> dict[int, CompositionFeatures]:
-    """Loads and caches `data/composition_features.toml`. Cached because it's read
-    on every `suggest()` call -- the file never changes at runtime."""
+) -> dict[str, CompositionFeatures]:
+    """Loads and caches `data/composition_features.toml`, keyed by `ddragon_id`
+    (NOT `champion_id` -- see the file's own header comment for why: numeric
+    champion_id collides across providers, since ManualCSVProvider's synthetic
+    1-20 ids overlap with real Data Dragon/OP.GG ids 1-20, which name a completely
+    different set of champions). Cached because it's read on every `suggest()`
+    call -- the file never changes at runtime."""
     with path.open("rb") as f:
         raw = tomllib.load(f)
-    return {int(champion_id): CompositionFeatures(**entry) for champion_id, entry in raw.items()}
+    return {ddragon_id: CompositionFeatures(**entry) for ddragon_id, entry in raw.items()}
 
 
 def features_from_tags(tags: list[str]) -> CompositionFeatures:
@@ -154,10 +168,10 @@ def features_from_tags(tags: list[str]) -> CompositionFeatures:
 
 
 def get_champion_features(
-    champion: Champion, hand_curated: dict[int, CompositionFeatures]
+    champion: Champion, hand_curated: dict[str, CompositionFeatures]
 ) -> CompositionFeatures:
-    if champion.champion_id in hand_curated:
-        return hand_curated[champion.champion_id]
+    if champion.ddragon_id in hand_curated:
+        return hand_curated[champion.ddragon_id]
     return features_from_tags(champion.tags)
 
 

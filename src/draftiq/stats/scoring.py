@@ -26,7 +26,7 @@ def score_candidate(
     champion_by_id: dict[int, Champion],
     k: float = DEFAULT_K,
     k_m: float = DEFAULT_K_MATCHUP,
-    composition_table: dict[int, CompositionFeatures] | None = None,
+    composition_table: dict[str, CompositionFeatures] | None = None,
     remaining_enemy_ids: set[int] | None = None,
     remaining_enemy_picks: int = 0,
 ) -> Recommendation:
