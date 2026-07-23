@@ -257,6 +257,18 @@ Protocol, so nothing else in the codebase knows or cares which one it's talking 
   - `get_patch`/`get_champions`/`get_champion_stats`/`get_matchup`/`get_synergy`/
     `get_build` -- same contract as every other provider, each mapping draftiq's
     request onto the right OP.GG MCP tool call and parsing its response.
+    `get_champion_stats` reads `data.summary.positions[].stats` (one
+    `{name, stats: {play, win_rate, pick_rate, ban_rate}}` entry per role the
+    champion has recorded games in), matched case-insensitively against the
+    requested role -- **not** `data.summary.average_stats`, which looks like the
+    obvious field but is a champion-wide aggregate the `position` request
+    parameter has no effect on at all (confirmed live: querying it at
+    `position=top` vs `position=support` for the same champion returned
+    byte-identical numbers). A role with no matching `positions[]` entry (the
+    champion genuinely has zero recorded games there) falls through to the same
+    zero-games `ChampionStats` `get_matchup`/`get_synergy` already return for an
+    unlisted pair. See `CLAUDE.md`'s "OP.GG schema notes" for the live
+    investigation and the suggestion-quality bug this was caught from.
   - `_counters`/`_synergies` (private, cached) -- fetch a champion's whole
     counters/synergies list once, so `get_matchup`/`get_synergy` calls for the same
     champion against different opponents/allies hit the cache instead of the network.
